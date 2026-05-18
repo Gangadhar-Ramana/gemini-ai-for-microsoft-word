@@ -5,8 +5,6 @@ A Microsoft Word task-pane add-in that connects Word to Google Gemini using your
 This repository is a community-maintained fork of the MIT-licensed Gemini AI for Office Word add-in by Anson Lai. It keeps the original Office/Gemini document-editing workflow and adds model discovery for newer Google AI Studio models, including Gemini 3.1 and Live API models.
 
 ## Why Use This
-
-- No Microsoft Copilot subscription is required.
 - You bring your own Google AI Studio API key.
 - Edits are applied inside Word rather than only returned as chat text.
 - Track Changes/redlines are supported, so you can review and accept/reject edits.
