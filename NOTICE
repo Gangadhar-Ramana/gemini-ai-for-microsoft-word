@@ -1,0 +1,19 @@
+Gemini AI for Microsoft Word
+
+This project is a derivative of:
+
+Gemini AI for Office Microsoft Word Add-in for Vibe Drafting
+Copyright (c) 2025 Anson Lai
+Original repository:
+https://github.com/AnsonLai/Gemini-AI-for-Office-Microsoft-Word-Add-In-for-Vibe-Drafting
+
+The original project is licensed under the MIT License. This fork keeps the
+MIT License and retains the original copyright notice in LICENSE.
+
+Derivative changes include:
+
+- Google AI Studio ListModels integration for model dropdown refresh.
+- Current Gemini/Gemma model defaults.
+- Gemini Live API WebSocket routing for bidiGenerateContent models.
+- Word equation object insertion support.
+- Documentation for local sideloading and BYOK use.

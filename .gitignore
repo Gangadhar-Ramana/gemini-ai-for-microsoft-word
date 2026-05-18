@@ -25,6 +25,9 @@ Thumbs.db
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+logs/
+dev-server.log
+dev-server.err.log
 
 # Office Add-in certificates (contains private keys)
 certs/
@@ -32,6 +35,14 @@ certs/
 # Temporary files
 *.tmp
 .cache/
+backup_*/
+backup_localmind_changes_*/
+graphify-out/
+manifest.local.xml
+google-ai-usable-models.current.json
+
+# Local scratch artifacts
+-
 
 # Debug/development output
 diff_output.txt

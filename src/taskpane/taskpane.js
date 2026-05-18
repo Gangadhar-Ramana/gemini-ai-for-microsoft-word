@@ -42,7 +42,7 @@ import {
   executeEditTable,
   executeEditSection
 } from './modules/commands/agentic-tools.js';
-import { setPlatform } from '@ansonlai/docx-redline-js';
+import { setPlatform, wrapInDocumentFragment } from '@ansonlai/docx-redline-js';
 
 // Configure marked for GFM (GitHub Flavored Markdown) with tables, breaks, etc.
 marked.setOptions({
@@ -54,6 +54,47 @@ marked.setOptions({
 
 const DEFAULT_AUTHOR = "Gemini AI";
 const GLANCE_COLLAPSED_STORAGE_KEY = "glanceCollapsed";
+const GOOGLE_MODEL_LIST_STORAGE_KEY = "geminiUsableGoogleModels";
+
+const DEFAULT_MODEL_OPTIONS = [
+  { id: "deep-research-max-preview-04-2026", label: "Deep Research Max Preview (Apr-21-2026)", method: "generateContent" },
+  { id: "deep-research-preview-04-2026", label: "Deep Research Preview (Apr-21-2026)", method: "generateContent" },
+  { id: "deep-research-pro-preview-12-2025", label: "Deep Research Pro Preview (Dec-12-2025)", method: "generateContent" },
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", method: "generateContent" },
+  { id: "gemini-2.0-flash-001", label: "Gemini 2.0 Flash 001", method: "generateContent" },
+  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite", method: "generateContent" },
+  { id: "gemini-2.0-flash-lite-001", label: "Gemini 2.0 Flash-Lite 001", method: "generateContent" },
+  { id: "gemini-2.5-computer-use-preview-10-2025", label: "Gemini 2.5 Computer Use Preview 10-2025", method: "generateContent" },
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", method: "generateContent" },
+  { id: "gemini-2.5-flash-image", label: "Nano Banana", method: "generateContent" },
+  { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", method: "generateContent" },
+  { id: "gemini-2.5-flash-preview-tts", label: "Gemini 2.5 Flash Preview TTS", method: "generateContent" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", method: "generateContent" },
+  { id: "gemini-2.5-pro-preview-tts", label: "Gemini 2.5 Pro Preview TTS", method: "generateContent" },
+  { id: "gemini-3.1-flash-image-preview", label: "Nano Banana 2", method: "generateContent" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash-Lite", method: "generateContent" },
+  { id: "gemini-3.1-flash-lite-preview", label: "Gemini 3.1 Flash Lite Preview", method: "generateContent" },
+  { id: "gemini-3.1-flash-tts-preview", label: "Gemini 3.1 Flash TTS Preview", method: "generateContent" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview", method: "generateContent" },
+  { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview Custom Tools", method: "generateContent" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview", method: "generateContent" },
+  { id: "gemini-3-pro-image-preview", label: "Nano Banana Pro", method: "generateContent" },
+  { id: "gemini-3-pro-preview", label: "Gemini 3 Pro Preview", method: "generateContent" },
+  { id: "gemini-flash-latest", label: "Gemini Flash Latest", method: "generateContent" },
+  { id: "gemini-flash-lite-latest", label: "Gemini Flash-Lite Latest", method: "generateContent" },
+  { id: "gemini-pro-latest", label: "Gemini Pro Latest", method: "generateContent" },
+  { id: "gemini-robotics-er-1.5-preview", label: "Gemini Robotics-ER 1.5 Preview", method: "generateContent" },
+  { id: "gemini-robotics-er-1.6-preview", label: "Gemini Robotics-ER 1.6 Preview", method: "generateContent" },
+  { id: "gemma-4-26b-a4b-it", label: "Gemma 4 26B A4B IT", method: "generateContent" },
+  { id: "gemma-4-31b-it", label: "Gemma 4 31B IT", method: "generateContent" },
+  { id: "lyria-3-clip-preview", label: "Lyria 3 Clip Preview", method: "generateContent" },
+  { id: "lyria-3-pro-preview", label: "Lyria 3 Pro Preview", method: "generateContent" },
+  { id: "nano-banana-pro-preview", label: "Nano Banana Pro", method: "generateContent" },
+  { id: "gemini-2.5-flash-native-audio-latest", label: "Gemini 2.5 Flash Native Audio Latest", method: "bidiGenerateContent" },
+  { id: "gemini-2.5-flash-native-audio-preview-09-2025", label: "Gemini 2.5 Flash Native Audio Preview 09-2025", method: "bidiGenerateContent" },
+  { id: "gemini-2.5-flash-native-audio-preview-12-2025", label: "Gemini 2.5 Flash Native Audio Preview 12-2025", method: "bidiGenerateContent" },
+  { id: "gemini-3.1-flash-live-preview", label: "Gemini 3.1 Flash Live Preview", method: "bidiGenerateContent" }
+];
 
 // Safety settings for Gemini API (disable all safety blocks)
 const SAFETY_SETTINGS_BLOCK_NONE = [
@@ -291,6 +332,7 @@ Office.onReady((info) => {
     document.getElementById("settings-button").onclick = showSettingsView;
     document.getElementById("save-api-key").onclick = saveApiKey;
     document.getElementById("back-to-main").onclick = showMainView;
+    document.getElementById("refresh-google-models-button").onclick = refreshGoogleModels;
 
     // Add event listener for refresh chat button
     document.getElementById("refresh-chat-button").onclick = refreshChat;
@@ -382,7 +424,7 @@ function showWelcomeScreen() {
     <div class="welcome-step">
       <div class="step-number">3</div>
       <div class="step-content">
-        <p>Select your project (or create new) and copy the key string starting with <code style="color: #ff0000ff;">AIza...</code></p>
+        <p>Select your project (or create new) and copy the Google API key string.</p>
       </div>
     </div>
     <div class="welcome-step">
@@ -468,10 +510,12 @@ function showSettingsView() {
   }
   // Load current models
   const currentFastModel = loadModel('fast');
+  populateModelSelect("model-select-fast", currentFastModel);
   if (currentFastModel) {
     document.getElementById("model-select-fast").value = currentFastModel;
   }
   const currentSlowModel = loadModel('slow');
+  populateModelSelect("model-select-slow", currentSlowModel);
   if (currentSlowModel) {
     document.getElementById("model-select-slow").value = currentSlowModel;
   }
@@ -573,14 +617,109 @@ function loadApiKey() {
   }
 }
 
+function normalizeModelName(modelName) {
+  return String(modelName || "").trim().replace(/^models\//, "");
+}
+
+function isLiveModel(modelName) {
+  return /live/i.test(normalizeModelName(modelName));
+}
+
+function loadGoogleModelOptions() {
+  const merged = new Map(DEFAULT_MODEL_OPTIONS.map(model => [model.id, model]));
+  const stored = localStorage.getItem(GOOGLE_MODEL_LIST_STORAGE_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        for (const model of parsed) {
+          if (model?.id) merged.set(model.id, model);
+        }
+      }
+    } catch (error) {
+      console.warn("Unable to parse stored Google model list:", error);
+    }
+  }
+  return [...merged.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function populateModelSelect(selectId, selectedModel) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  const selected = normalizeModelName(selectedModel);
+  select.innerHTML = "";
+
+  for (const model of loadGoogleModelOptions()) {
+    const option = document.createElement("option");
+    option.value = model.id;
+    option.textContent = `${model.label}${model.method === "bidiGenerateContent" ? " (Live API)" : ""}`;
+    if (model.id === selected) option.selected = true;
+    select.appendChild(option);
+  }
+}
+
+async function refreshGoogleModels() {
+  const status = document.getElementById("google-model-refresh-status");
+  const button = document.getElementById("refresh-google-models-button");
+  const apiKey = document.getElementById("api-key-input")?.value?.trim() || loadApiKey();
+  if (!apiKey) {
+    if (status) status.textContent = "Enter and save your Gemini API key first.";
+    return;
+  }
+
+  if (button) button.disabled = true;
+  if (status) status.textContent = "Checking models available to this API key...";
+
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.error?.message || `ListModels failed with HTTP ${response.status}`);
+    }
+
+    const usable = (data.models || [])
+      .map(model => ({
+        id: normalizeModelName(model.name),
+        label: model.displayName || normalizeModelName(model.name),
+        methods: model.supportedGenerationMethods || []
+      }))
+      .filter(model => model.methods.includes("generateContent") || model.methods.includes("bidiGenerateContent"))
+      .map(model => ({
+        id: model.id,
+        label: model.label,
+        method: model.methods.includes("generateContent") ? "generateContent" : "bidiGenerateContent",
+        methods: model.methods
+      }));
+
+    if (usable.length === 0) {
+      throw new Error("No generateContent or Live API models were returned for this key.");
+    }
+
+    localStorage.setItem(GOOGLE_MODEL_LIST_STORAGE_KEY, JSON.stringify(usable));
+    populateModelSelect("model-select-fast", loadModel("fast"));
+    populateModelSelect("model-select-slow", loadModel("slow"));
+
+    const textModels = usable.filter(model => model.methods.includes("generateContent")).length;
+    const liveModels = usable.filter(model => model.methods.includes("bidiGenerateContent")).length;
+    if (status) {
+      status.textContent = `Found ${usable.length} usable model(s): ${textModels} normal, ${liveModels} Live API.`;
+    }
+  } catch (error) {
+    console.error("Unable to list Google models:", error);
+    if (status) status.textContent = `Unable to list models: ${error.message || String(error)}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function loadModel(type = 'fast') {
   const key = type === 'slow' ? "geminiModelSlow" : "geminiModelFast";
   const storedModel = localStorage.getItem(key);
   if (storedModel && storedModel.trim() !== "") {
-    return storedModel;
+    return normalizeModelName(storedModel);
   }
   // Defaults
-  return type === 'slow' ? "gemini-2.5-pro" : "gemini-flash-latest";
+  return type === 'slow' ? "gemini-2.5-pro" : "gemini-3.1-flash-lite";
 }
 
 function loadSystemMessage() {
@@ -612,6 +751,81 @@ function saveRedlineAuthor(author) {
   if (author !== undefined && author !== null) {
     localStorage.setItem("redlineAuthor", author.toString());
   }
+}
+
+function escapeXml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function normalizeLatexForWordMath(latex) {
+  return String(latex || "")
+    .replace(/```(?:latex|tex)?/gi, "")
+    .replace(/```/g, "")
+    .replace(/\\begin\{(?:equation|align|aligned|gather|multline)\*?\}/g, "")
+    .replace(/\\end\{(?:equation|align|aligned|gather|multline)\*?\}/g, "")
+    .replace(/\\\[|\\\]|\$\$/g, "\n")
+    .replace(/\\\\/g, "\n")
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function mathParagraphOoxml(line) {
+  return `<w:p><m:oMathPara><m:oMath><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t xml:space="preserve">${escapeXml(line)}</m:t></m:r></m:oMath></m:oMathPara></w:p>`;
+}
+
+function buildWordEquationOoxml(latex, title) {
+  const parts = [];
+  if (title && title.trim()) {
+    parts.push(`<w:p><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">${escapeXml(title.trim())}</w:t></w:r></w:p>`);
+  }
+
+  const lines = normalizeLatexForWordMath(latex);
+  if (lines.length === 0) {
+    throw new Error("No equation content was provided.");
+  }
+
+  for (const line of lines) {
+    parts.push(mathParagraphOoxml(line));
+  }
+
+  return wrapInDocumentFragment(parts.join(""))
+    .replace(
+      /<w:document([^>]*)>/,
+      '<w:document$1 xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+    );
+}
+
+async function executeInsertWordEquation(latex, location = "cursor", title = "") {
+  const checkpointIndex = await createCheckpoint(true);
+  const equationOoxml = buildWordEquationOoxml(latex, title);
+  const requestedLocation = String(location || "cursor").toLowerCase();
+
+  await Word.run(async (context) => {
+    const selection = context.document.getSelection();
+    if (requestedLocation === "end") {
+      context.document.body.insertOoxml(equationOoxml, Word.InsertLocation.end);
+    } else if (requestedLocation === "start" || requestedLocation === "beginning" || requestedLocation === "first_page") {
+      context.document.body.insertOoxml(equationOoxml, Word.InsertLocation.start);
+    } else {
+      selection.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+    }
+    await context.sync();
+  });
+
+  return {
+    message: requestedLocation === "end"
+      ? "Inserted the Word equation at the end."
+      : requestedLocation === "start" || requestedLocation === "beginning" || requestedLocation === "first_page"
+        ? "Inserted the Word equation at the beginning."
+        : "Inserted the Word equation at the cursor.",
+    checkpointIndex
+  };
 }
 
 async function setChangeTrackingForAi(context, redlineEnabled, sourceLabel = "AI") {
@@ -1299,6 +1513,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
 
     const geminiModel = loadModel(modelType);
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
+    const useLiveApi = isLiveModel(geminiModel);
 
     let contextString = "";
     if (docSelection && docSelection.trim() !== "") {
@@ -1389,6 +1604,29 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                 },
               },
               required: ["instruction"],
+            },
+          },
+          {
+            name: "insert_word_equation",
+            description: "Insert a Microsoft Word equation object from LaTeX. Use this only after the requested equation and variant are clear. If the user did not specify a location, insert at the cursor. Do not use this before researching equation variants when the user asks for a famous equation.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                latex: {
+                  type: "STRING",
+                  description: "The final LaTeX equation content only, with no prose.",
+                },
+                location: {
+                  type: "STRING",
+                  enum: ["cursor", "end", "start", "first_page"],
+                  description: "Where to insert the equation. Default is cursor.",
+                },
+                title: {
+                  type: "STRING",
+                  description: "Optional short title only if the user asks for a title or label.",
+                },
+              },
+              required: ["latex"],
             },
           },
           {
@@ -1579,6 +1817,14 @@ CRITICAL: If the user asks to "Reply to a comment" by "changing textual content"
 NEVER claim to have "added a sentence" or "changed text" if you have only called \`insert_comment\`.
 NEVER state that you have taken an action unless you have successfully invoked the corresponding tool.
 
+EQUATION WORKFLOW:
+- For any request to insert, write, add, or place a famous mathematical, scientific, or engineering equation, first use \`perform_research\` with a focused query that includes Wikipedia or another authoritative equation reference.
+- If the equation has multiple common variants and the user did not specify which one, do not insert yet. Briefly explain the main variants and ask the user which variant to use.
+- If the variant is clear, insert a Microsoft Word equation object with \`insert_word_equation\`. Do not use \`apply_redlines\` for equation insertion.
+- If the user does not specify a location, insert at the cursor.
+- Do not insert both LaTeX text and a Word equation unless the user explicitly asks for both.
+- Only include a title or label if the user explicitly asks for a title, heading, label, or equation name.
+
 AFTER executing a tool, DO NOT repeat the content of the document or the changes in your text response. The user can see the changes in the document.
 
 CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal IDs in your text responses to the user. These are for your internal reasoning and tool calls only. Refer to locations naturally (e.g., "the second paragraph", "the Definitions section", "the paragraph regarding termination").
@@ -1663,7 +1909,9 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
 
       let result;
       try {
-        result = await callGeminiWithRetry(apiUrl, payload);
+        result = useLiveApi
+          ? await callGeminiLiveAsGenerateContent(geminiApiKey, geminiModel, payload)
+          : await callGeminiWithRetry(apiUrl, payload);
       } catch (apiError) {
         console.error(`API Error on iteration ${loopCount}:`, apiError);
 
@@ -2000,6 +2248,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           "apply_redlines",
           "insert_comment",
           "highlight_text",
+          "insert_word_equation",
           "edit_list",
           "insert_list_item",
           "edit_table",
@@ -2022,6 +2271,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
               "insert_comment": `Inserting comments: "${instruction}"...`,
               "highlight_text": `Highlighting text: "${instruction}"...`,
               "perform_research": `Researching: "${instruction}"...`,
+              "insert_word_equation": "Inserting Word equation...",
               "navigate_to_section": `Navigating to: "${instruction}"...`
             };
             const statusText = toolFriendlyNames[functionCall.name] || "Working...";
@@ -2108,6 +2358,23 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
             });
 
             updateSystemMessage(loadingMsg, `Found search results for: "${instruction}"`);
+          } else if (functionCall.name === "insert_word_equation") {
+            const result = await executeInsertWordEquation(
+              args.latex,
+              args.location || "cursor",
+              args.title || ""
+            );
+            toolResult = result.message;
+            toolSucceeded = true;
+
+            toolsExecutedInCurrentRequest.push({
+              name: functionCall.name,
+              instruction: "insert_word_equation",
+              result: toolResult,
+              success: true
+            });
+
+            updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
           } else if (functionCall.name === "navigate_to_section") {
             updateSystemMessage(loadingMsg, `Navigating to: "${instruction}"...`);
             toolResult = await executeNavigate(instruction, docText);
@@ -2286,7 +2553,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           //     content: [ { text: "..." } ]
           //   }
           // }
-          functionResponses.push({
+          const functionResponse = {
             functionResponse: {
               name: functionCall.name,
               response: {
@@ -2296,9 +2563,14 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
                     text: toolResult || ""
                   }
                 ]
-              }
+              },
+              id: functionCall.id
             }
-          });
+          };
+          if (!functionCall.id) {
+            delete functionResponse.functionResponse.id;
+          }
+          functionResponses.push(functionResponse);
         }
 
         // NOW add both the model's function call and the responses to history together
@@ -2500,5 +2772,161 @@ async function callGeminiWithRetry(url, payload, retries = 3, backoff = 1000) {
       await new Promise(r => setTimeout(r, backoff * Math.pow(2, i)));
     }
   }
+}
+
+function flattenContentsForLive(contents) {
+  return (contents || [])
+    .map(turn => {
+      const role = turn.role || "user";
+      const parts = (turn.parts || []).map(part => {
+        if (part.text) return part.text;
+        if (part.functionCall) {
+          return `[tool requested: ${part.functionCall.name} ${JSON.stringify(part.functionCall.args || {})}]`;
+        }
+        if (part.functionResponse) {
+          return `[tool result: ${part.functionResponse.name} ${JSON.stringify(part.functionResponse.response || {})}]`;
+        }
+        return "";
+      }).filter(Boolean).join("\n");
+      return parts ? `${role.toUpperCase()}:\n${parts}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function livePartToGeneratePart(part) {
+  if (part.text) return { text: part.text };
+  if (part.functionCall) return { functionCall: part.functionCall };
+  return null;
+}
+
+async function callGeminiLiveAsGenerateContent(apiKey, modelName, payload) {
+  return new Promise((resolve, reject) => {
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+    const websocket = new WebSocket(wsUrl);
+    const parts = [];
+    let settled = false;
+    let setupDone = false;
+    let outputText = "";
+    let clientContentSent = false;
+
+    const sendClientContent = () => {
+      if (clientContentSent || websocket.readyState !== WebSocket.OPEN) return;
+      clientContentSent = true;
+      websocket.send(JSON.stringify({
+        clientContent: {
+          turns: [{
+            role: "user",
+            parts: [{ text: flattenContentsForLive(payload.contents) }]
+          }],
+          turnComplete: true
+        }
+      }));
+    };
+
+    const timeoutId = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { websocket.close(); } catch (_) { /* ignore */ }
+        reject(new Error("Live API request timed out."));
+      }
+    }, TIMEOUT_LIMITS.FETCH_TIMEOUT_MS);
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      try { websocket.close(); } catch (_) { /* ignore */ }
+      if (parts.length === 0 && outputText.trim()) {
+        parts.push({ text: outputText.trim() });
+      }
+      if (parts.length === 0) {
+        parts.push({ text: "Live API response completed. See document for any applied tool changes." });
+      }
+      resolve({
+        candidates: [{
+          content: {
+            role: "model",
+            parts
+          }
+        }]
+      });
+    };
+
+    websocket.onerror = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      reject(new Error("Live API WebSocket failed."));
+    };
+
+    websocket.onopen = () => {
+      const setupMessage = {
+        setup: {
+          model: `models/${normalizeModelName(modelName)}`,
+          generationConfig: {
+            responseModalities: ["AUDIO"]
+          },
+          systemInstruction: payload.systemInstruction,
+          tools: payload.tools
+        }
+      };
+      websocket.send(JSON.stringify(setupMessage));
+      setTimeout(sendClientContent, 1000);
+    };
+
+    websocket.onmessage = async (event) => {
+      const rawData = event.data && typeof event.data.text === "function"
+        ? await event.data.text()
+        : event.data;
+      const response = JSON.parse(rawData);
+
+      if (!setupDone && response.setupComplete !== undefined) {
+        setupDone = true;
+        sendClientContent();
+        return;
+      }
+
+      if (response.toolCall?.functionCalls?.length) {
+        for (const functionCall of response.toolCall.functionCalls) {
+          parts.push({
+            functionCall: {
+              name: functionCall.name,
+              args: functionCall.args || {},
+              id: functionCall.id
+            }
+          });
+        }
+        finish();
+        return;
+      }
+
+      if (response.serverContent?.modelTurn?.parts?.length) {
+        for (const part of response.serverContent.modelTurn.parts) {
+          const mapped = livePartToGeneratePart(part);
+          if (mapped) parts.push(mapped);
+        }
+      }
+
+      if (response.serverContent?.outputTranscription?.text) {
+        outputText += response.serverContent.outputTranscription.text;
+      }
+
+      if (response.serverContent?.turnComplete || response.serverContent?.generationComplete) {
+        finish();
+      }
+    };
+
+    if (currentRequestController) {
+      currentRequestController.signal.addEventListener("abort", () => {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeoutId);
+          try { websocket.close(); } catch (_) { /* ignore */ }
+          reject(new Error("Request cancelled by user"));
+        }
+      }, { once: true });
+    }
+  });
 }
 

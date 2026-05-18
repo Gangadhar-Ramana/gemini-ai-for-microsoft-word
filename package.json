@@ -1,9 +1,9 @@
 {
-  "name": "office-addin-taskpane-js",
+  "name": "gemini-ai-for-microsoft-word",
   "version": "0.0.1",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OfficeDev/Office-Addin-TaskPane-JS.git"
+    "url": "https://github.com/Gangadhar-Ramana/gemini-ai-for-microsoft-word.git"
   },
   "license": "MIT",
   "config": {
