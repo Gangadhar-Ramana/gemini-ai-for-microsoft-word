@@ -1973,6 +1973,7 @@ CRITICAL: For formatting-only requests where the existing text should remain the
 CRITICAL: If the user asks to "Reply to a comment" by "changing textual content", you MUST call BOTH \`apply_redlines\` (to apply the text change) AND \`insert_comment\` (to insert the reply). Call them in the same turn.
 NEVER claim to have "added a sentence" or "changed text" if you have only called \`insert_comment\`.
 NEVER state that you have taken an action unless you have successfully invoked the corresponding tool.
+If a requested Word document action cannot be completed with the available tools, do not keep retrying and do not stop silently. Reply in this chat with a concise explanation of what could not be done, and suggest the closest supported action when useful.
 
 EQUATION WORKFLOW:
 - For any request to insert, write, add, or place a famous mathematical, scientific, or engineering equation, first use \`perform_research\` with a focused query that includes Wikipedia or another authoritative equation reference.
@@ -2772,12 +2773,24 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           );
 
           if (consecutiveNoProgressToolLoops >= DOCUMENT_LIMITS.MAX_NO_PROGRESS_TOOL_LOOPS) {
-            const loopGuardMessage = "Stopped to prevent a retry loop: repeated document edit attempts are failing with no applied changes.";
+            const failureSummary = failedMutationSignatures
+              .map(signature => signature.split("|").slice(-1)[0])
+              .filter(Boolean)
+              .slice(0, 2)
+              .join(" ");
+            const loopGuardMessage = failureSummary
+              ? `I could not apply that change to the Word document. ${failureSummary}`
+              : "I could not apply that change to the Word document with the available tools.";
             if (loadingMsg) {
-              updateSystemMessage(loadingMsg, loopGuardMessage);
+              removeMessage(loadingMsg);
             } else {
-              addMessageToChat("System", loopGuardMessage);
+              removeMessage(loadingMsg);
             }
+            addMessageToChat("Gemini", loopGuardMessage);
+            chatHistory.push({
+              role: "model",
+              parts: [{ text: loopGuardMessage }]
+            });
             // Reset conversation history to avoid carrying forward orphaned
             // function-call/function-response turns into the next request.
             chatHistory = [];
