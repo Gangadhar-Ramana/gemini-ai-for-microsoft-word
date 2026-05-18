@@ -29,6 +29,7 @@ let setChangeTrackingForAi;
 let restoreChangeTracking;
 let SAFETY_SETTINGS_BLOCK_NONE;
 let API_LIMITS;
+const EDIT_FALLBACK_MODEL = "gemini-2.5-flash";
 
 function initAgenticTools(deps) {
   ({
@@ -42,6 +43,38 @@ function initAgenticTools(deps) {
     SAFETY_SETTINGS_BLOCK_NONE,
     API_LIMITS
   } = deps);
+}
+
+function normalizeModelName(modelName) {
+  return String(modelName || "").trim().replace(/^models\//, "");
+}
+
+function getGenerateContentModelCandidates() {
+  const preferred = normalizeModelName(loadModel());
+  const candidates = [];
+  if (preferred && !/live/i.test(preferred)) {
+    candidates.push(preferred);
+  }
+  if (!candidates.includes(EDIT_FALLBACK_MODEL)) {
+    candidates.push(EDIT_FALLBACK_MODEL);
+  }
+  return candidates;
+}
+
+async function postGenerateContent(apiKey, modelName, payload, errorPrefix = "API failed") {
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`${errorPrefix}: ${err}`);
+  }
+
+  return response.json();
 }
 
 /**
@@ -196,8 +229,6 @@ Return ONLY the JSON array, nothing else:`;
 // Helper for the Diff generation (specialized prompt)
 async function callGeminiForDiffs(prompt) {
   const geminiApiKey = loadApiKey();
-  const geminiModel = loadModel();
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
 
   const jsonSchema = {
     type: "ARRAY",
@@ -240,39 +271,31 @@ async function callGeminiForDiffs(prompt) {
     },
   };
 
-  try {
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+  for (const modelName of getGenerateContentModelCandidates()) {
+    try {
+      const result = await postGenerateContent(geminiApiKey, modelName, payload);
+      console.log(`Gemini diff raw result from ${modelName}:`, JSON.stringify(result, null, 2));
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API failed: ${err}`);
+      if (!result.candidates || !Array.isArray(result.candidates) || result.candidates.length === 0) {
+        throw new Error("Gemini diff response contained no candidates.");
+      }
+
+      const candidate = result.candidates[0];
+
+      if (!candidate.content || !candidate.content.parts || !Array.isArray(candidate.content.parts) || candidate.content.parts.length === 0) {
+        console.error("Gemini diff candidate missing content.parts:", candidate);
+        throw new Error("Gemini diff response was missing content.parts (possibly blocked by safety settings).");
+      }
+
+      const jsonText = candidate.content.parts[0].text;
+      console.log("Gemini diff JSON text:", jsonText);
+      return JSON.parse(jsonText);
+    } catch (error) {
+      console.warn(`Diff generation failed with ${modelName}:`, error);
     }
-
-    const result = await response.json();
-    console.log("Gemini diff raw result:", JSON.stringify(result, null, 2));
-
-    if (!result.candidates || !Array.isArray(result.candidates) || result.candidates.length === 0) {
-      throw new Error("Gemini diff response contained no candidates.");
-    }
-
-    const candidate = result.candidates[0];
-
-    if (!candidate.content || !candidate.content.parts || !Array.isArray(candidate.content.parts) || candidate.content.parts.length === 0) {
-      console.error("Gemini diff candidate missing content.parts:", candidate);
-      throw new Error("Gemini diff response was missing content.parts (possibly blocked by safety settings).");
-    }
-
-    const jsonText = candidate.content.parts[0].text;
-    console.log("Gemini diff JSON text:", jsonText);
-    return JSON.parse(jsonText);
-  } catch (error) {
-    console.error("Error getting diffs:", error);
-    return null;
   }
+
+  return null;
 }
 /**
  * Agentic Tool: Inserts comments based on an instruction using Structural Anchoring.
@@ -594,8 +617,6 @@ function createToolResult(count, itemType, zeroMessage) {
 // Generic helper for JSON responses
 async function callGeminiForJSON(prompt, schema) {
   const geminiApiKey = loadApiKey();
-  const geminiModel = loadModel();
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
 
   const systemInstruction = {
     parts: [{ text: loadSystemMessage() }]
@@ -613,36 +634,26 @@ async function callGeminiForJSON(prompt, schema) {
     },
   };
 
-  try {
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+  for (const modelName of getGenerateContentModelCandidates()) {
+    try {
+      const result = await postGenerateContent(geminiApiKey, modelName, payload);
+      if (!result.candidates || result.candidates.length === 0) throw new Error("No candidates");
+      const candidate = result.candidates[0];
+      if (!candidate.content || !candidate.content.parts) throw new Error("No content");
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`API failed: ${err}`);
+      const jsonText = candidate.content.parts[0].text;
+      return JSON.parse(jsonText);
+    } catch (error) {
+      console.warn(`Gemini JSON helper failed with ${modelName}:`, error);
     }
-
-    const result = await response.json();
-    if (!result.candidates || result.candidates.length === 0) throw new Error("No candidates");
-    const candidate = result.candidates[0];
-    if (!candidate.content || !candidate.content.parts) throw new Error("No content");
-
-    const jsonText = candidate.content.parts[0].text;
-    return JSON.parse(jsonText);
-  } catch (error) {
-    console.error("Error calling Gemini for JSON:", error);
-    return null;
   }
+
+  return null;
 }
 
 
 async function executeResearch(query) {
   const geminiApiKey = loadApiKey();
-  const geminiModel = loadModel();
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
 
   const tools = [{ google_search: {} }];
 
@@ -657,29 +668,21 @@ async function executeResearch(query) {
     ]
   };
 
-  try {
-    const response = await fetch(apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+  for (const modelName of getGenerateContentModelCandidates()) {
+    try {
+      const result = await postGenerateContent(geminiApiKey, modelName, payload, "Research API failed");
+      if (!result.candidates || result.candidates.length === 0) return "No results found.";
 
-    if (!response.ok) {
-      const err = await response.text();
-      throw new Error(`Research API failed: ${err}`);
+      const candidate = result.candidates[0];
+      if (!candidate.content || !candidate.content.parts) return "No content returned.";
+
+      return candidate.content.parts[0].text;
+    } catch (error) {
+      console.warn(`Research failed with ${modelName}:`, error);
     }
-
-    const result = await response.json();
-    if (!result.candidates || result.candidates.length === 0) return "No results found.";
-
-    const candidate = result.candidates[0];
-    if (!candidate.content || !candidate.content.parts) return "No content returned.";
-
-    return candidate.content.parts[0].text;
-  } catch (error) {
-    console.error("Error in executeResearch:", error);
-    return `Error performing research: ${error.message}`;
   }
+
+  return "Research failed with the selected model and the Gemini 2.5 Flash fallback.";
 }
 
 /**

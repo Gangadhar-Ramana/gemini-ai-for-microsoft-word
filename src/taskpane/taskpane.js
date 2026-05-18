@@ -55,6 +55,10 @@ marked.setOptions({
 const DEFAULT_AUTHOR = "Gemini AI";
 const GLANCE_COLLAPSED_STORAGE_KEY = "glanceCollapsed";
 const GOOGLE_MODEL_LIST_STORAGE_KEY = "geminiUsableGoogleModels";
+const MODEL_DEFAULT_MIGRATION_KEY = "gemini25DefaultModelMigrationApplied";
+const DEFAULT_FAST_MODEL = "gemini-2.5-flash";
+const DEFAULT_SLOW_MODEL = "gemini-2.5-pro";
+const EDIT_FALLBACK_MODEL = "gemini-2.5-flash";
 
 const DEFAULT_MODEL_OPTIONS = [
   { id: "deep-research-max-preview-04-2026", label: "Deep Research Max Preview (Apr-21-2026)", method: "generateContent" },
@@ -300,6 +304,7 @@ let toolsExecutedInCurrentRequest = [];  // Track successful tool executions for
 Office.onReady((info) => {
   if (info.host === Office.HostType.Word) {
     setPlatform(Office?.context?.platform);
+    migrateDefaultModelSelections();
     document.getElementById("sideload-msg").style.display = "none";
     // Show main view by default
     showMainView();
@@ -617,6 +622,15 @@ function loadApiKey() {
   }
 }
 
+function migrateDefaultModelSelections() {
+  if (localStorage.getItem(MODEL_DEFAULT_MIGRATION_KEY) === "true") return;
+  const fastModel = normalizeModelName(localStorage.getItem("geminiModelFast"));
+  if (fastModel === "gemini-3.1-flash-lite") {
+    localStorage.setItem("geminiModelFast", DEFAULT_FAST_MODEL);
+  }
+  localStorage.setItem(MODEL_DEFAULT_MIGRATION_KEY, "true");
+}
+
 function normalizeModelName(modelName) {
   return String(modelName || "").trim().replace(/^models\//, "");
 }
@@ -719,7 +733,7 @@ function loadModel(type = 'fast') {
     return normalizeModelName(storedModel);
   }
   // Defaults
-  return type === 'slow' ? "gemini-2.5-pro" : "gemini-3.1-flash-lite";
+  return type === 'slow' ? DEFAULT_SLOW_MODEL : DEFAULT_FAST_MODEL;
 }
 
 function loadSystemMessage() {
@@ -826,6 +840,93 @@ async function executeInsertWordEquation(latex, location = "cursor", title = "")
         : "Inserted the Word equation at the cursor.",
     checkpointIndex
   };
+}
+
+async function executeFormatTextOccurrences(targets, scope = "document") {
+  if (!Array.isArray(targets) || targets.length === 0) {
+    return {
+      message: "No formatting targets were provided.",
+      showToUser: false
+    };
+  }
+
+  const checkpointIndex = await createCheckpoint(true);
+  const requestedScope = String(scope || "document").toLowerCase();
+  let formattedCount = 0;
+
+  await Word.run(async (context) => {
+    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeFormatTextOccurrences");
+    try {
+      const searchScope = requestedScope === "selection"
+        ? context.document.getSelection()
+        : context.document.body;
+
+      for (const target of targets) {
+        const text = String(target?.text || "").trim();
+        if (!text) continue;
+
+        const ranges = searchScope.search(text, {
+          matchCase: target.matchCase !== false,
+          matchWholeWord: !!target.matchWholeWord
+        });
+        ranges.load("items/text");
+        await context.sync();
+
+        for (const range of ranges.items) {
+          if (target.bold !== undefined) range.font.bold = !!target.bold;
+          if (target.italic !== undefined) range.font.italic = !!target.italic;
+          if (target.underline !== undefined) {
+            range.font.underline = target.underline ? Word.UnderlineType.single : Word.UnderlineType.none;
+          }
+          if (target.strikethrough !== undefined) range.font.strikeThrough = !!target.strikethrough;
+
+          if (target.subscript === true) {
+            range.font.subscript = true;
+            range.font.superscript = false;
+          }
+          if (target.superscript === true) {
+            range.font.superscript = true;
+            range.font.subscript = false;
+          }
+
+          await applyNestedScriptFormatting(context, range, target.subscriptText, "subscript");
+          await applyNestedScriptFormatting(context, range, target.superscriptText, "superscript");
+          formattedCount++;
+        }
+      }
+
+      await context.sync();
+    } finally {
+      await restoreChangeTracking(context, trackingState, "executeFormatTextOccurrences");
+    }
+  });
+
+  return {
+    message: formattedCount > 0
+      ? `Formatted ${formattedCount} text occurrence(s).`
+      : "No matching text was found to format.",
+    showToUser: formattedCount > 0,
+    checkpointIndex
+  };
+}
+
+async function applyNestedScriptFormatting(context, parentRange, nestedText, scriptType) {
+  const text = String(nestedText || "").trim();
+  if (!text) return;
+
+  const nestedRanges = parentRange.search(text, { matchCase: true, matchWholeWord: false });
+  nestedRanges.load("items/text");
+  await context.sync();
+
+  for (const nestedRange of nestedRanges.items) {
+    if (scriptType === "subscript") {
+      nestedRange.font.subscript = true;
+      nestedRange.font.superscript = false;
+    } else if (scriptType === "superscript") {
+      nestedRange.font.superscript = true;
+      nestedRange.font.subscript = false;
+    }
+  }
 }
 
 async function setChangeTrackingForAi(context, redlineEnabled, sourceLabel = "AI") {
@@ -1512,7 +1613,6 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
     }
 
     const geminiModel = loadModel(modelType);
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
     const useLiveApi = isLiveModel(geminiModel);
 
     let contextString = "";
@@ -1628,6 +1728,62 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
               },
               required: ["latex"],
             },
+          },
+          {
+            name: "format_text_occurrences",
+            description: "Apply direct Word font formatting to existing text occurrences. Use this for user requests such as italicize, bold, underline, strikethrough, subscript, or superscript existing words/symbols everywhere. This is preferred over apply_redlines when the text content should stay the same and only formatting changes are needed. For notation like CL or CD where only L or D should become subscript, set text to CL/CD, italic true, and subscriptText to L/D.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                targets: {
+                  type: "ARRAY",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      text: {
+                        type: "STRING",
+                        description: "Exact existing text to find, for example CL or CD."
+                      },
+                      bold: { type: "BOOLEAN" },
+                      italic: { type: "BOOLEAN" },
+                      underline: { type: "BOOLEAN" },
+                      strikethrough: { type: "BOOLEAN" },
+                      subscript: {
+                        type: "BOOLEAN",
+                        description: "Set true only when the whole matched text should be subscript."
+                      },
+                      superscript: {
+                        type: "BOOLEAN",
+                        description: "Set true only when the whole matched text should be superscript."
+                      },
+                      subscriptText: {
+                        type: "STRING",
+                        description: "Substring inside the match to make subscript, for example L in CL."
+                      },
+                      superscriptText: {
+                        type: "STRING",
+                        description: "Substring inside the match to make superscript."
+                      },
+                      matchCase: {
+                        type: "BOOLEAN",
+                        description: "Default true."
+                      },
+                      matchWholeWord: {
+                        type: "BOOLEAN",
+                        description: "Default false, useful for short exact terms when needed."
+                      }
+                    },
+                    required: ["text"]
+                  }
+                },
+                scope: {
+                  type: "STRING",
+                  enum: ["document", "selection"],
+                  description: "Use document unless the user explicitly asks to format only the selection."
+                }
+              },
+              required: ["targets"]
+            }
           },
           {
             name: "navigate_to_section",
@@ -1813,6 +1969,7 @@ TOOL SELECTION GUIDANCE:
 IMPORTANT: You have access to tools. You can chat and respond normally to questions. However, when the user asks for an action that involves manipulating the document, you should HEAVILY FAVOR using the corresponding tool rather than just describing the action.
 
 CRITICAL: For plain text edits and inline formatting within existing paragraphs, use \`apply_redlines\`. For structural list/table/section edits, use the dedicated tools (\`edit_list\`, \`convert_headers_to_list\`, \`edit_table\`, \`edit_section\`).
+CRITICAL: For formatting-only requests where the existing text should remain the same, use \`format_text_occurrences\`, not \`apply_redlines\`. Examples: italicize every "CL"; make the "L" in "CL" subscript; superscript all "2" in "x2"; bold a repeated term.
 CRITICAL: If the user asks to "Reply to a comment" by "changing textual content", you MUST call BOTH \`apply_redlines\` (to apply the text change) AND \`insert_comment\` (to insert the reply). Call them in the same turn.
 NEVER claim to have "added a sentence" or "changed text" if you have only called \`insert_comment\`.
 NEVER state that you have taken an action unless you have successfully invoked the corresponding tool.
@@ -1870,16 +2027,15 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
         // If some tools executed successfully, show partial success
         if (toolsExecutedInCurrentRequest.length > 0) {
           const successMessage = generateSuccessMessage(toolsExecutedInCurrentRequest);
-          const throttleWarning = "\n\nIf you're using Gemini 3, it is in preview and your access has likely been throttled. Please go into settings and revert to Gemini 2.5.";
+          const timeoutGuidance = "\n\nThe request timed out. Gemini 2.5 Flash is the recommended fast model for document edits.";
 
           if (successMessage) {
-            addMessageToChat("System", successMessage + "\n\n*(Request timed out after completing some changes)*" + throttleWarning);
+            addMessageToChat("System", successMessage + "\n\n*(Request timed out after completing some changes)*" + timeoutGuidance);
           } else {
-            addMessageToChat("Error", "Request timed out. Some changes may have been applied." + throttleWarning);
+            addMessageToChat("Error", "Request timed out. Some changes may have been applied." + timeoutGuidance);
           }
         } else {
-          // Specific message for throttle/timeout
-          addMessageToChat("Error", "If you're using Gemini 3, it is in preview and your access has likely been throttled. Please go into settings and revert to Gemini 2.5.");
+          addMessageToChat("Error", "The request timed out before any document changes were applied. Gemini 2.5 Flash is the recommended fast model for document edits.");
 
           // Discard the timed out request from history to allow user to continue clean
           // Remove the last user message we added for this request
@@ -1911,7 +2067,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
       try {
         result = useLiveApi
           ? await callGeminiLiveAsGenerateContent(geminiApiKey, geminiModel, payload)
-          : await callGeminiWithRetry(apiUrl, payload);
+          : await callGeminiWithModelFallback(geminiApiKey, geminiModel, payload);
       } catch (apiError) {
         console.error(`API Error on iteration ${loopCount}:`, apiError);
 
@@ -2007,6 +2163,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           "insert_comment",
           "highlight_text",
           "perform_research",
+          "format_text_occurrences",
           "navigate_to_section",
           "edit_list",
           "insert_list_item",
@@ -2249,6 +2406,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           "insert_comment",
           "highlight_text",
           "insert_word_equation",
+          "format_text_occurrences",
           "edit_list",
           "insert_list_item",
           "edit_table",
@@ -2272,6 +2430,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
               "highlight_text": `Highlighting text: "${instruction}"...`,
               "perform_research": `Researching: "${instruction}"...`,
               "insert_word_equation": "Inserting Word equation...",
+              "format_text_occurrences": "Applying text formatting...",
               "navigate_to_section": `Navigating to: "${instruction}"...`
             };
             const statusText = toolFriendlyNames[functionCall.name] || "Working...";
@@ -2372,6 +2531,22 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
               instruction: "insert_word_equation",
               result: toolResult,
               success: true
+            });
+
+            updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
+          } else if (functionCall.name === "format_text_occurrences") {
+            const result = await executeFormatTextOccurrences(
+              args.targets || [],
+              args.scope || "document"
+            );
+            toolResult = result.message;
+            toolSucceeded = !!result.showToUser;
+
+            toolsExecutedInCurrentRequest.push({
+              name: functionCall.name,
+              instruction: "format_text_occurrences",
+              result: toolResult,
+              success: result.showToUser
             });
 
             updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
@@ -2662,7 +2837,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
 
       // Override error message for timeouts
       if (error.message && (error.message.includes("timed out") || error.message.includes("timeout"))) {
-        errorMessage = "Gemini 3 is in preview and they have likely been throttled. Please go into settings and revert to Gemini 2.5.";
+        errorMessage = "The request failed before any document changes were applied. Gemini 2.5 Flash is the recommended fast model for document edits.";
       }
 
       const errorMsgEl = addMessageToChat("Error", errorMessage);
@@ -2685,6 +2860,22 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
 }
 
 // Helper with retry logic and timeout support
+async function callGeminiWithModelFallback(apiKey, preferredModel, payload) {
+  const normalizedPreferred = normalizeModelName(preferredModel);
+  const preferredUrl = `https://generativelanguage.googleapis.com/v1beta/models/${normalizedPreferred}:generateContent?key=${apiKey}`;
+
+  try {
+    return await callGeminiWithRetry(preferredUrl, payload);
+  } catch (error) {
+    if (!normalizedPreferred || normalizedPreferred === EDIT_FALLBACK_MODEL) {
+      throw error;
+    }
+    console.warn(`Primary model ${normalizedPreferred} failed; retrying with ${EDIT_FALLBACK_MODEL}.`, error);
+    const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${EDIT_FALLBACK_MODEL}:generateContent?key=${apiKey}`;
+    return callGeminiWithRetry(fallbackUrl, payload);
+  }
+}
+
 async function callGeminiWithRetry(url, payload, retries = 3, backoff = 1000) {
   for (let i = 0; i < retries; i++) {
     // Create abort controller for this specific fetch attempt
