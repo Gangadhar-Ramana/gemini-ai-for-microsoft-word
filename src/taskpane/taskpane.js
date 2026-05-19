@@ -1019,64 +1019,6 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
   };
 }
 
-function buildDirectInlineMathCommand(userMessage, docSelection) {
-  const message = String(userMessage || "");
-  const lower = message.toLowerCase();
-  const asksForMath = /\b(math format|word math|ms word math|equation format|professional math|latex)\b/i.test(message);
-  const asksForSubscript = /\bsubscript\b/i.test(message);
-  if (!asksForMath && !asksForSubscript) return null;
-
-  const replaceAll = /\b(all|every|everywhere|throughout|wherever|where ever)\b/i.test(message);
-  const selectedText = String(docSelection || "").trim();
-
-  const knownSymbols = [
-    { regex: /\bCL\b/i, targetText: "CL", latex: "C_L" },
-    { regex: /\bCD\b/i, targetText: "CD", latex: "C_D" },
-    { regex: /\bC0\b|\bC_0\b/i, targetText: "C0", latex: "C_0" },
-    { regex: /\bRe\b/, targetText: "Re", latex: "Re" },
-    { regex: /\balpha\b|\\alpha/i, targetText: "alpha", latex: "\\alpha" },
-    { regex: /\bbeta\b|\\beta/i, targetText: "beta", latex: "\\beta" },
-    { regex: /\beta\b|\\eta/i, targetText: "eta", latex: "\\eta" },
-    { regex: /\bomega[-_\s]?z\b|\\omega[_\s-]?z/i, targetText: "omega-z", latex: "\\omega_z" },
-    { regex: /\bomega\b|\\omega/i, targetText: "omega", latex: "\\omega" }
-  ];
-
-  if (selectedText && /\b(selected|selection|select|highlighted|this|here)\b/i.test(message)) {
-    const selectedKnown = knownSymbols.find(symbol => symbol.regex.test(selectedText));
-    if (selectedKnown) {
-      return {
-        targetText: selectedText,
-        latex: selectedKnown.latex,
-        scope: "selection",
-        replaceAll: false
-      };
-    }
-  }
-
-  const explicitKnown = knownSymbols.find(symbol => symbol.regex.test(message));
-  if (explicitKnown) {
-    return {
-      targetText: explicitKnown.targetText,
-      latex: explicitKnown.latex,
-      scope: "document",
-      replaceAll: selectedText ? replaceAll : true
-    };
-  }
-
-  const symbolMatch = message.match(/\b(?:that is|word|symbol|short form|term)\s+([A-Za-z][A-Za-z0-9]{1,4})\b/i);
-  if (symbolMatch && asksForSubscript) {
-    const symbol = symbolMatch[1];
-    return {
-      targetText: symbol,
-      latex: `${symbol[0]}_${symbol.slice(1)}`,
-      scope: "document",
-      replaceAll: selectedText ? replaceAll : true
-    };
-  }
-
-  return null;
-}
-
 async function executeFormatTextOccurrences(targets, scope = "document") {
   if (!Array.isArray(targets) || targets.length === 0) {
     return {
@@ -1839,24 +1781,6 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
       return;
     }
 
-    const directInlineMathCommand = buildDirectInlineMathCommand(userMessage, docSelection);
-    if (directInlineMathCommand) {
-      const result = await executeConvertTextToWordMath(
-        directInlineMathCommand.targetText,
-        directInlineMathCommand.latex,
-        directInlineMathCommand.scope,
-        directInlineMathCommand.replaceAll
-      );
-
-      removeMessage(loadingMsg);
-      if (result.showToUser) {
-        addMessageToChat("Gemini", `${result.message} I kept the notation inline so the paragraph flow is not changed.`);
-      } else {
-        addMessageToChat("Gemini", result.message || "I could not find matching text to convert.");
-      }
-      return;
-    }
-
     // --- Call Gemini API ---
     const geminiApiKey = loadApiKey();
     if (!geminiApiKey) {
@@ -1984,7 +1908,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
           },
           {
             name: "format_text_occurrences",
-            description: "Apply direct Word font formatting to existing text occurrences. Use this for user requests such as italicize, bold, underline, strikethrough, subscript, or superscript existing words/symbols everywhere. This is preferred over apply_redlines when the text content should stay the same and only formatting changes are needed. For notation like CL or CD where only L or D should become subscript, set text to CL/CD, italic true, and subscriptText to L/D.",
+            description: "Apply direct Word font formatting to existing text occurrences. Use this when the user's requested result is plain Word text formatting such as italic, bold, underline, strikethrough, subscript, or superscript. Use selection scope for selected text, or document scope for repeated occurrences.",
             parameters: {
               type: "OBJECT",
               properties: {
@@ -2040,7 +1964,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
           },
           {
             name: "convert_text_to_word_math",
-            description: "Replace existing selected or matched inline text with scientific math formatting without creating new paragraphs. Use this whenever the user says math format, Word math, equation format, professional math style, or asks to convert scientific symbols/short forms such as CL, CD, Re, alpha, eta, omega into proper inline mathematical notation. This must take priority over plain italic formatting when the user explicitly asks for math format. For notation cleanup across the document, use targets with LaTeX-like expressions such as C_L, C_D, Re, \\alpha, \\eta, \\omega_z.",
+            description: "Replace existing selected or matched inline text with inline mathematical notation while preserving paragraph flow. Use this when the user's requested result is inline math notation inside existing prose. Provide either a single target or batch targets.",
             parameters: {
               type: "OBJECT",
               properties: {
@@ -2255,64 +2179,29 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
     const systemInstruction = {
       parts: [
         {
-          text: loadSystemMessage() + `\\n\\nDOCUMENT CONTEXT FORMAT:
-The document content uses enhanced paragraph markers with formatting metadata:
-- [P#|Style] - Normal paragraphs with their style (e.g., [P1|Normal], [P2|Heading1])
-- [P#|ListNumber|L:level|§] - Numbered list item at nesting level, § means it's a section header
-- [P#|ListBullet|L:level] - Bullet list item at nesting level
-- [P#|Normal|§N] - Normal paragraph belonging to section N (follows a section header)
-- [P#|Normal|T:row,col] - Paragraph inside a table cell at row,col position
+          text: loadSystemMessage() + `\\n\\nDOCUMENT CONTEXT:
+The document text includes internal markers such as [P#], list levels, table positions, and section markers. Use them only to locate content for tool calls. Do not mention these markers to the user.
 
-IMPORTANT: The [P#] tags, [T:row,col] tags, and other metadata are for YOUR internal reasoning and tool usage only. 
-NEVER reference "P14", "P15", "Paragraph 14", etc. in your response to the user. The user does not see these numbers and they will be confusing (especially for table cells which the user does not count as paragraphs).
-Instead, refer to locations continuously and naturally, e.g., "I updated the Introduction," "I fixed the second item in the list," "I modified the table row," or "I updated the highlighted text."
+AGENT BEHAVIOR:
+- Follow the user's latest chat instruction first.
+- Inspect the provided document context and choose the best available Word tool yourself.
+- When the user asks for document changes, use tools rather than only explaining.
+- Prefer the current selection when the user says selected text, this, here, or highlighted text.
+- Use the whole document when the user says all, every, throughout, or when the request clearly applies globally.
+- If the request is ambiguous or cannot be done with the available tools, ask a short clarification or explain the limitation in chat.
+- After a successful tool call, give a brief completion message.
 
-TOOL SELECTION GUIDANCE:
-- The user's latest chat instruction has highest priority. Do not replace a specific user request with a generic formatting habit from these instructions.
-- Use the [P#] identifiers when calling tools, but never speak them to the user.
-- For simple text edits within a paragraph: use \`apply_redlines\`
-- For editing contiguous lists (adding/removing/reordering items): prefer \`edit_list\` to preserve formatting
-- For converting non-contiguous headers (like "1. PURPOSE", "2. DEFINITION" with body text between them) to a proper numbered list: use \`convert_headers_to_list\`
-- For editing tables: prefer \`edit_table\` to preserve structure
-- For editing legal contract sections (numbered headers + body paragraphs): prefer \`edit_section\`
-- The § marker indicates section structure - paragraphs marked §N belong to section N
-
-IMPORTANT: You have access to tools. You can chat and respond normally to questions. However, when the user asks for an action that involves manipulating the document, you should HEAVILY FAVOR using the corresponding tool rather than just describing the action.
-
-CRITICAL: If the user asks for "math format", "Word math", "MS Word math", "equation format", or "professional math style" for existing text, use \`convert_text_to_word_math\`. Do not use plain italic formatting for that request unless the user explicitly asks for italic only.
-CRITICAL: If the user says "select the word/text" or "here", operate on the current selection by default. Do not change every occurrence unless the user says all, every, throughout, or everywhere.
-SCIENTIFIC NOTATION CLEANUP:
-- If the user asks to detect symbols, short forms, coefficients, variables, or notation and convert them to math format, use \`convert_text_to_word_math\` with batch \`targets\`.
-- Convert common text notation into LaTeX-like math first, then apply inline math formatting: CL -> C_L, CD -> C_D, C0 or C_0 -> C_0, Re -> Re, alpha -> \\alpha, beta -> \\beta, eta -> \\eta, omega -> \\omega, omega-z -> \\omega_z.
-- Inline notation conversions must stay inside the same paragraph and sentence. Do not insert paragraph breaks or standalone equation paragraphs for symbols such as C_L, C_D, Re, \\alpha, or \\omega_z.
-- Inline math formatting already applies mathematical italic/subscript/superscript styling. Do not separately use \`format_text_occurrences\` for the same symbols unless the user explicitly asks for plain text italic formatting.
-- Only convert abbreviations that are clearly scientific notation in context. If ambiguous, ask a short clarification instead of changing unrelated text.
-CRITICAL: For plain text edits and inline formatting within existing paragraphs, use \`apply_redlines\`. For structural list/table/section edits, use the dedicated tools (\`edit_list\`, \`convert_headers_to_list\`, \`edit_table\`, \`edit_section\`).
-CRITICAL: For formatting-only requests where the existing text should remain the same and the user did NOT ask for Word math/equation format, use \`format_text_occurrences\`, not \`apply_redlines\`. Examples: italicize every "CL"; superscript all "2" in "x2"; bold a repeated term.
-CRITICAL: If the user asks to "Reply to a comment" by "changing textual content", you MUST call BOTH \`apply_redlines\` (to apply the text change) AND \`insert_comment\` (to insert the reply). Call them in the same turn.
-NEVER claim to have "added a sentence" or "changed text" if you have only called \`insert_comment\`.
-NEVER state that you have taken an action unless you have successfully invoked the corresponding tool.
-If a requested Word document action cannot be completed with the available tools, do not keep retrying and do not stop silently. Reply in this chat with a concise explanation of what could not be done, and suggest the closest supported action when useful.
-
-EQUATION WORKFLOW:
-- For any request to insert, write, add, or place a famous mathematical, scientific, or engineering equation, first use \`perform_research\` with a focused query that includes Wikipedia or another authoritative equation reference.
-- If the equation has multiple common variants and the user did not specify which one, do not insert yet. Briefly explain the main variants and ask the user which variant to use.
-- If the variant is clear, insert a Microsoft Word equation object with \`insert_word_equation\`. Do not use \`apply_redlines\` for equation insertion.
-- If the user does not specify a location, insert at the cursor.
-- Do not insert both LaTeX text and a Word equation unless the user explicitly asks for both.
-- Only include a title or label if the user explicitly asks for a title, heading, label, or equation name.
-
-AFTER executing a tool, DO NOT repeat the content of the document or the changes in your text response. The user can see the changes in the document.
-
-CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal IDs in your text responses to the user. These are for your internal reasoning and tool calls only. Refer to locations naturally (e.g., "the second paragraph", "the Definitions section", "the paragraph regarding termination").
- 
- LIST HANDLING:
- When adding or modifying lists via \`apply_redlines\`, you MUST use specific Markdown syntax so the engine can format them correctly in Word:
- - Unordered: Use '* ' (asterisk space).
- - Ordered: Use '1. ', 'a. ', 'i. ', etc.
- - Multi-level / Outlines: Use exact numbering like '1.1.', '1.1.1.' or '2.1. ' if that is the intent.
- - Indentation: Sub-items MUST be indented by 4 spaces.
- - Do NOT use generic bullets ('-') if you want specific numbering. The engine relies on your markers (e.g., '1.1.') to detect the list type.`,
+AVAILABLE TOOL INTENT:
+- apply_redlines: rewrite, replace, delete, add, or edit document text with tracked changes.
+- format_text_occurrences: apply normal Word font formatting to existing text.
+- convert_text_to_word_math: convert existing inline notation inside prose while preserving paragraph flow.
+- insert_word_equation: insert a standalone Word equation from LaTeX.
+- insert_comment: add comments.
+- highlight_text: highlight text.
+- edit_list, insert_list_item, convert_headers_to_list: manipulate lists.
+- edit_table: manipulate tables.
+- edit_section: manipulate structured sections.
+- perform_research: look up external information when needed.`,
         },
       ],
     };
