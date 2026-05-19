@@ -2991,6 +2991,21 @@ AVAILABLE TOOL INTENT:
           parts: functionResponses
         });
 
+        if (successfulMutatingToolsThisLoop > 0) {
+          const successMessage = generateSuccessMessage(toolsExecutedInCurrentRequest)
+            || "Task completed successfully.";
+          if (loadingMsg) {
+            removeMessage(loadingMsg);
+          }
+          addMessageToChat("Gemini", successMessage);
+          chatHistory.push({
+            role: "model",
+            parts: [{ text: successMessage }]
+          });
+          keepLooping = false;
+          break;
+        }
+
         if (attemptedMutatingToolsThisLoop > 0 && successfulMutatingToolsThisLoop === 0) {
           const noProgressSignature = failedMutationSignatures.join("||").slice(0, 2000);
           const signatureChanged = !!(lastNoProgressSignature && noProgressSignature && noProgressSignature !== lastNoProgressSignature);
