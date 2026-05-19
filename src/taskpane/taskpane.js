@@ -860,15 +860,15 @@ function buildInlineMathSpec(latex, fallbackText = "") {
 }
 
 async function applyInlineMathFormatting(context, range, inlineSpec) {
-  range.insertText(inlineSpec.text, Word.InsertLocation.replace);
-  range.font.italic = !!inlineSpec.italic;
+  const insertedRange = range.insertText(inlineSpec.text, Word.InsertLocation.replace);
+  insertedRange.font.italic = !!inlineSpec.italic;
   await context.sync();
 
   if (inlineSpec.subscriptText) {
-    await applyNestedScriptFormatting(context, range, inlineSpec.subscriptText, "subscript");
+    await applyNestedScriptFormatting(context, insertedRange, inlineSpec.subscriptText, "subscript");
   }
   if (inlineSpec.superscriptText) {
-    await applyNestedScriptFormatting(context, range, inlineSpec.superscriptText, "superscript");
+    await applyNestedScriptFormatting(context, insertedRange, inlineSpec.superscriptText, "superscript");
   }
 }
 
@@ -1016,6 +1016,64 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
     showToUser: convertedCount > 0,
     checkpointIndex
   };
+}
+
+function buildDirectInlineMathCommand(userMessage, docSelection) {
+  const message = String(userMessage || "");
+  const lower = message.toLowerCase();
+  const asksForMath = /\b(math format|word math|ms word math|equation format|professional math|latex)\b/i.test(message);
+  const asksForSubscript = /\bsubscript\b/i.test(message);
+  if (!asksForMath && !asksForSubscript) return null;
+
+  const replaceAll = /\b(all|every|everywhere|throughout|wherever|where ever)\b/i.test(message);
+  const selectedText = String(docSelection || "").trim();
+
+  const knownSymbols = [
+    { regex: /\bCL\b/i, targetText: "CL", latex: "C_L" },
+    { regex: /\bCD\b/i, targetText: "CD", latex: "C_D" },
+    { regex: /\bC0\b|\bC_0\b/i, targetText: "C0", latex: "C_0" },
+    { regex: /\bRe\b/, targetText: "Re", latex: "Re" },
+    { regex: /\balpha\b|\\alpha/i, targetText: "alpha", latex: "\\alpha" },
+    { regex: /\bbeta\b|\\beta/i, targetText: "beta", latex: "\\beta" },
+    { regex: /\beta\b|\\eta/i, targetText: "eta", latex: "\\eta" },
+    { regex: /\bomega[-_\s]?z\b|\\omega[_\s-]?z/i, targetText: "omega-z", latex: "\\omega_z" },
+    { regex: /\bomega\b|\\omega/i, targetText: "omega", latex: "\\omega" }
+  ];
+
+  if (selectedText && /\b(selected|selection|select|highlighted|this|here)\b/i.test(message)) {
+    const selectedKnown = knownSymbols.find(symbol => symbol.regex.test(selectedText));
+    if (selectedKnown) {
+      return {
+        targetText: selectedText,
+        latex: selectedKnown.latex,
+        scope: "selection",
+        replaceAll: false
+      };
+    }
+  }
+
+  const explicitKnown = knownSymbols.find(symbol => symbol.regex.test(message));
+  if (explicitKnown) {
+    return {
+      targetText: explicitKnown.targetText,
+      latex: explicitKnown.latex,
+      scope: "document",
+      replaceAll
+    };
+  }
+
+  const symbolMatch = message.match(/\b(?:that is|word|symbol|short form|term)\s+([A-Za-z][A-Za-z0-9]{1,4})\b/i);
+  if (symbolMatch && asksForSubscript) {
+    const symbol = symbolMatch[1];
+    return {
+      targetText: symbol,
+      latex: `${symbol[0]}_${symbol.slice(1)}`,
+      scope: "document",
+      replaceAll
+    };
+  }
+
+  return null;
 }
 
 async function executeFormatTextOccurrences(targets, scope = "document") {
@@ -1777,6 +1835,24 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
       sendButton.disabled = false;
       if (thinkButton) thinkButton.disabled = false;
 
+      return;
+    }
+
+    const directInlineMathCommand = buildDirectInlineMathCommand(userMessage, docSelection);
+    if (directInlineMathCommand) {
+      const result = await executeConvertTextToWordMath(
+        directInlineMathCommand.targetText,
+        directInlineMathCommand.latex,
+        directInlineMathCommand.scope,
+        directInlineMathCommand.replaceAll
+      );
+
+      removeMessage(loadingMsg);
+      if (result.showToUser) {
+        addMessageToChat("Gemini", `${result.message} I kept the notation inline so the paragraph flow is not changed.`);
+      } else {
+        addMessageToChat("Gemini", result.message || "I could not find matching text to convert.");
+      }
       return;
     }
 
