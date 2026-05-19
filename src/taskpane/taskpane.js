@@ -812,6 +812,66 @@ function mathContentOoxml(line) {
   return mathRunOoxml(normalized);
 }
 
+const GREEK_LATEX_MAP = {
+  "\\alpha": "α",
+  "\\beta": "β",
+  "\\gamma": "γ",
+  "\\delta": "δ",
+  "\\epsilon": "ε",
+  "\\eta": "η",
+  "\\theta": "θ",
+  "\\lambda": "λ",
+  "\\mu": "μ",
+  "\\nu": "ν",
+  "\\rho": "ρ",
+  "\\sigma": "σ",
+  "\\tau": "τ",
+  "\\phi": "φ",
+  "\\omega": "ω",
+  "\\Omega": "Ω"
+};
+
+function normalizeInlineMathLatex(latex) {
+  return String(latex || "")
+    .trim()
+    .replace(/^\$+|\$+$/g, "")
+    .replace(/\\mathrm\{([^}]+)\}/g, "$1")
+    .replace(/\s+/g, "");
+}
+
+function buildInlineMathSpec(latex, fallbackText = "") {
+  const normalized = normalizeInlineMathLatex(latex || fallbackText);
+  if (!normalized) return null;
+
+  const subscriptMatch = normalized.match(/^(.+?)_\{?([^{}]+)\}?$/);
+  const superscriptMatch = normalized.match(/^(.+?)\^\{?([^{}]+)\}?$/);
+  const baseRaw = subscriptMatch?.[1] || superscriptMatch?.[1] || normalized;
+  const scriptRaw = subscriptMatch?.[2] || superscriptMatch?.[2] || "";
+  const base = GREEK_LATEX_MAP[baseRaw] || baseRaw.replace(/^\\/, "");
+  const script = GREEK_LATEX_MAP[scriptRaw] || scriptRaw.replace(/^\\/, "");
+  const text = `${base}${script}`;
+
+  return {
+    text,
+    italic: true,
+    subscriptText: subscriptMatch ? script : "",
+    superscriptText: superscriptMatch ? script : ""
+  };
+}
+
+async function applyInlineMathFormatting(context, range, inlineSpec) {
+  range.insertText(inlineSpec.text, Word.InsertLocation.replace);
+  range.font.italic = !!inlineSpec.italic;
+  await context.sync();
+
+  if (inlineSpec.subscriptText) {
+    await applyNestedScriptFormatting(context, range, inlineSpec.subscriptText, "subscript");
+  }
+  if (inlineSpec.superscriptText) {
+    await applyNestedScriptFormatting(context, range, inlineSpec.superscriptText, "superscript");
+  }
+}
+
 function buildWordEquationOoxml(latex, title) {
   const parts = [];
   if (title && title.trim()) {
@@ -874,7 +934,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
           const equationLatex = String(target?.latex || "").trim();
           if (!textToFind || !equationLatex) continue;
 
-          const equationOoxml = buildWordEquationOoxml(equationLatex, "");
+          const inlineSpec = buildInlineMathSpec(equationLatex, textToFind);
           const ranges = context.document.body.search(textToFind, {
             matchCase: target.matchCase !== false,
             matchWholeWord: target.matchWholeWord !== false
@@ -885,7 +945,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
           const replaceEveryOccurrence = target.replaceAll !== false;
           const rangesToConvert = replaceEveryOccurrence ? ranges.items : ranges.items.slice(0, 1);
           for (const range of rangesToConvert) {
-            range.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+            await applyInlineMathFormatting(context, range, inlineSpec);
             convertedCount++;
           }
         }
@@ -898,8 +958,8 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
 
     return {
       message: convertedCount > 0
-        ? `Converted ${convertedCount} text occurrence(s) to Word math.`
-        : "No matching symbols were found to convert to Word math.",
+        ? `Converted ${convertedCount} text occurrence(s) to inline math formatting.`
+        : "No matching symbols were found to convert to inline math formatting.",
       showToUser: convertedCount > 0,
       checkpointIndex
     };
@@ -917,7 +977,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
   }
 
   const checkpointIndex = await createCheckpoint(true);
-  const equationOoxml = buildWordEquationOoxml(equationLatex, "");
+  const inlineSpec = buildInlineMathSpec(equationLatex, textToFind);
   let convertedCount = 0;
 
   await Word.run(async (context) => {
@@ -925,7 +985,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
     try {
       if (requestedScope === "selection" || !textToFind) {
         const selection = context.document.getSelection();
-        selection.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+        await applyInlineMathFormatting(context, selection, inlineSpec);
         convertedCount = 1;
       } else {
         const searchScope = context.document.body;
@@ -938,7 +998,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
 
         const rangesToConvert = replaceAll ? ranges.items : ranges.items.slice(0, 1);
         for (const range of rangesToConvert) {
-          range.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+          await applyInlineMathFormatting(context, range, inlineSpec);
           convertedCount++;
         }
       }
@@ -951,8 +1011,8 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
 
   return {
     message: convertedCount > 0
-      ? `Converted ${convertedCount} text occurrence(s) to Word math.`
-      : "No matching text was found to convert to Word math.",
+      ? `Converted ${convertedCount} text occurrence(s) to inline math formatting.`
+      : "No matching text was found to convert to inline math formatting.",
     showToUser: convertedCount > 0,
     checkpointIndex
   };
@@ -1903,7 +1963,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
           },
           {
             name: "convert_text_to_word_math",
-            description: "Replace existing selected or matched text with Microsoft Word math equation objects. Use this whenever the user says math format, Word math, equation format, professional math style, or asks to convert scientific symbols/short forms such as CL, CD, Re, alpha, eta, omega into proper mathematical notation. This must take priority over plain italic formatting when the user explicitly asks for math format. For notation cleanup across the document, use targets with LaTeX-like expressions such as C_L, C_D, Re, \\alpha, \\eta, \\omega_z.",
+            description: "Replace existing selected or matched inline text with scientific math formatting without creating new paragraphs. Use this whenever the user says math format, Word math, equation format, professional math style, or asks to convert scientific symbols/short forms such as CL, CD, Re, alpha, eta, omega into proper inline mathematical notation. This must take priority over plain italic formatting when the user explicitly asks for math format. For notation cleanup across the document, use targets with LaTeX-like expressions such as C_L, C_D, Re, \\alpha, \\eta, \\omega_z.",
             parameters: {
               type: "OBJECT",
               properties: {
@@ -2146,8 +2206,9 @@ CRITICAL: If the user asks for "math format", "Word math", "MS Word math", "equa
 CRITICAL: If the user says "select the word/text" or "here", operate on the current selection by default. Do not change every occurrence unless the user says all, every, throughout, or everywhere.
 SCIENTIFIC NOTATION CLEANUP:
 - If the user asks to detect symbols, short forms, coefficients, variables, or notation and convert them to math format, use \`convert_text_to_word_math\` with batch \`targets\`.
-- Convert common text notation into LaTeX-like math first, then insert Word math: CL -> C_L, CD -> C_D, C0 or C_0 -> C_0, Re -> Re, alpha -> \\alpha, beta -> \\beta, eta -> \\eta, omega -> \\omega, omega-z -> \\omega_z.
-- Word math already renders variables in mathematical italic style. Do not separately use \`format_text_occurrences\` for the same symbols unless the user explicitly asks for plain text italic formatting.
+- Convert common text notation into LaTeX-like math first, then apply inline math formatting: CL -> C_L, CD -> C_D, C0 or C_0 -> C_0, Re -> Re, alpha -> \\alpha, beta -> \\beta, eta -> \\eta, omega -> \\omega, omega-z -> \\omega_z.
+- Inline notation conversions must stay inside the same paragraph and sentence. Do not insert paragraph breaks or standalone equation paragraphs for symbols such as C_L, C_D, Re, \\alpha, or \\omega_z.
+- Inline math formatting already applies mathematical italic/subscript/superscript styling. Do not separately use \`format_text_occurrences\` for the same symbols unless the user explicitly asks for plain text italic formatting.
 - Only convert abbreviations that are clearly scientific notation in context. If ambiguous, ask a short clarification instead of changing unrelated text.
 CRITICAL: For plain text edits and inline formatting within existing paragraphs, use \`apply_redlines\`. For structural list/table/section edits, use the dedicated tools (\`edit_list\`, \`convert_headers_to_list\`, \`edit_table\`, \`edit_section\`).
 CRITICAL: For formatting-only requests where the existing text should remain the same and the user did NOT ask for Word math/equation format, use \`format_text_occurrences\`, not \`apply_redlines\`. Examples: italicize every "CL"; superscript all "2" in "x2"; bold a repeated term.
