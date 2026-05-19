@@ -301,6 +301,37 @@ async function extractEnhancedDocumentContext(context) {
 let chatHistory = [];
 let toolsExecutedInCurrentRequest = [];  // Track successful tool executions for recovery
 
+function generateSuccessMessage(executedTools = []) {
+  const successfulTools = (Array.isArray(executedTools) ? executedTools : [])
+    .filter(tool => tool && tool.success !== false);
+
+  if (successfulTools.length === 0) {
+    return "";
+  }
+
+  const latestTool = successfulTools[successfulTools.length - 1];
+  const resultText = String(latestTool.result || "").trim();
+  if (resultText) {
+    return resultText;
+  }
+
+  const toolName = latestTool.name || "";
+  if (toolName === "insert_word_equation") return "Inserted the Word equation.";
+  if (toolName === "convert_text_to_word_math") return "Converted the requested text to inline Word math.";
+  if (toolName === "format_text_occurrences") return "Applied the requested text formatting.";
+  if (toolName === "highlight_text") return "Highlighted the requested text.";
+  if (toolName === "insert_comment") return "Inserted the requested comment.";
+  if (toolName === "apply_redlines") return "Applied the requested document edits.";
+  if (toolName === "run_word_script") return "Applied the requested Word action plan.";
+  if (toolName === "edit_list" || toolName === "insert_list_item" || toolName === "convert_headers_to_list") {
+    return "Updated the requested list formatting.";
+  }
+  if (toolName === "edit_table") return "Updated the requested table.";
+  if (toolName === "edit_section") return "Updated the requested section.";
+
+  return "Task completed successfully.";
+}
+
 Office.onReady((info) => {
   if (info.host === Office.HostType.Word) {
     setPlatform(Office?.context?.platform);
