@@ -871,8 +871,15 @@ function normalizeInlineMathLatex(latex) {
 }
 
 function buildInlineMathSpec(latex, fallbackText = "") {
-  const normalized = normalizeInlineMathLatex(latex || fallbackText);
+  let normalized = normalizeInlineMathLatex(latex || fallbackText);
   if (!normalized) return null;
+
+  const fallbackNormalized = normalizeInlineMathLatex(fallbackText);
+  if (!normalized.includes("_") && !normalized.includes("^") && /^[A-Z]{2,4}$/.test(normalized)) {
+    normalized = `${normalized.charAt(0)}_${normalized.slice(1)}`;
+  } else if (normalized === fallbackNormalized && /^[A-Z]{2,4}$/.test(fallbackNormalized)) {
+    normalized = `${fallbackNormalized.charAt(0)}_${fallbackNormalized.slice(1)}`;
+  }
 
   const subscriptMatch = normalized.match(/^(.+?)_\{?([^{}]+)\}?$/);
   const superscriptMatch = normalized.match(/^(.+?)\^\{?([^{}]+)\}?$/);
@@ -3308,9 +3315,6 @@ AVAILABLE TOOL INTENT:
         if (successfulMutatingToolsThisLoop > 0) {
           const successMessage = generateSuccessMessage(toolsExecutedInCurrentRequest)
             || "Task completed successfully.";
-          if (loadingMsg) {
-            removeMessage(loadingMsg);
-          }
           addMessageToChat("Gemini", successMessage);
           chatHistory.push({
             role: "model",
