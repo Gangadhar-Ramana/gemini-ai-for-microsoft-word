@@ -790,7 +790,26 @@ function normalizeLatexForWordMath(latex) {
 }
 
 function mathParagraphOoxml(line) {
-  return `<w:p><m:oMathPara><m:oMath><m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t xml:space="preserve">${escapeXml(line)}</m:t></m:r></m:oMath></m:oMathPara></w:p>`;
+  return `<w:p><m:oMathPara><m:oMath>${mathContentOoxml(line)}</m:oMath></m:oMathPara></w:p>`;
+}
+
+function mathRunOoxml(text) {
+  return `<m:r><m:rPr><m:sty m:val="p"/></m:rPr><m:t xml:space="preserve">${escapeXml(text)}</m:t></m:r>`;
+}
+
+function mathContentOoxml(line) {
+  const normalized = String(line || "").trim();
+  const subscriptMatch = normalized.match(/^([A-Za-z0-9]+)_\{?([A-Za-z0-9]+)\}?$/);
+  if (subscriptMatch) {
+    return `<m:sSub><m:e>${mathRunOoxml(subscriptMatch[1])}</m:e><m:sub>${mathRunOoxml(subscriptMatch[2])}</m:sub></m:sSub>`;
+  }
+
+  const superscriptMatch = normalized.match(/^([A-Za-z0-9]+)\^\{?([A-Za-z0-9]+)\}?$/);
+  if (superscriptMatch) {
+    return `<m:sSup><m:e>${mathRunOoxml(superscriptMatch[1])}</m:e><m:sup>${mathRunOoxml(superscriptMatch[2])}</m:sup></m:sSup>`;
+  }
+
+  return mathRunOoxml(normalized);
 }
 
 function buildWordEquationOoxml(latex, title) {
@@ -838,6 +857,103 @@ async function executeInsertWordEquation(latex, location = "cursor", title = "")
       : requestedLocation === "start" || requestedLocation === "beginning" || requestedLocation === "first_page"
         ? "Inserted the Word equation at the beginning."
         : "Inserted the Word equation at the cursor.",
+    checkpointIndex
+  };
+}
+
+async function executeConvertTextToWordMath(targetText, latex, scope = "selection", replaceAll = false, targets = null) {
+  if (Array.isArray(targets) && targets.length > 0) {
+    const checkpointIndex = await createCheckpoint(true);
+    let convertedCount = 0;
+
+    await Word.run(async (context) => {
+      const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeConvertTextToWordMathBatch");
+      try {
+        for (const target of targets) {
+          const textToFind = String(target?.targetText || target?.text || "").trim();
+          const equationLatex = String(target?.latex || "").trim();
+          if (!textToFind || !equationLatex) continue;
+
+          const equationOoxml = buildWordEquationOoxml(equationLatex, "");
+          const ranges = context.document.body.search(textToFind, {
+            matchCase: target.matchCase !== false,
+            matchWholeWord: target.matchWholeWord !== false
+          });
+          ranges.load("items/text");
+          await context.sync();
+
+          const replaceEveryOccurrence = target.replaceAll !== false;
+          const rangesToConvert = replaceEveryOccurrence ? ranges.items : ranges.items.slice(0, 1);
+          for (const range of rangesToConvert) {
+            range.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+            convertedCount++;
+          }
+        }
+
+        await context.sync();
+      } finally {
+        await restoreChangeTracking(context, trackingState, "executeConvertTextToWordMathBatch");
+      }
+    });
+
+    return {
+      message: convertedCount > 0
+        ? `Converted ${convertedCount} text occurrence(s) to Word math.`
+        : "No matching symbols were found to convert to Word math.",
+      showToUser: convertedCount > 0,
+      checkpointIndex
+    };
+  }
+
+  const requestedScope = String(scope || "selection").toLowerCase();
+  const textToFind = String(targetText || "").trim();
+  const equationLatex = String(latex || textToFind || "").trim();
+
+  if (!equationLatex) {
+    return {
+      message: "No math expression was provided.",
+      showToUser: false
+    };
+  }
+
+  const checkpointIndex = await createCheckpoint(true);
+  const equationOoxml = buildWordEquationOoxml(equationLatex, "");
+  let convertedCount = 0;
+
+  await Word.run(async (context) => {
+    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeConvertTextToWordMath");
+    try {
+      if (requestedScope === "selection" || !textToFind) {
+        const selection = context.document.getSelection();
+        selection.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+        convertedCount = 1;
+      } else {
+        const searchScope = context.document.body;
+        const ranges = searchScope.search(textToFind, {
+          matchCase: true,
+          matchWholeWord: !!replaceAll
+        });
+        ranges.load("items/text");
+        await context.sync();
+
+        const rangesToConvert = replaceAll ? ranges.items : ranges.items.slice(0, 1);
+        for (const range of rangesToConvert) {
+          range.insertOoxml(equationOoxml, Word.InsertLocation.replace);
+          convertedCount++;
+        }
+      }
+
+      await context.sync();
+    } finally {
+      await restoreChangeTracking(context, trackingState, "executeConvertTextToWordMath");
+    }
+  });
+
+  return {
+    message: convertedCount > 0
+      ? `Converted ${convertedCount} text occurrence(s) to Word math.`
+      : "No matching text was found to convert to Word math.",
+    showToUser: convertedCount > 0,
     checkpointIndex
   };
 }
@@ -1786,6 +1902,63 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
             }
           },
           {
+            name: "convert_text_to_word_math",
+            description: "Replace existing selected or matched text with Microsoft Word math equation objects. Use this whenever the user says math format, Word math, equation format, professional math style, or asks to convert scientific symbols/short forms such as CL, CD, Re, alpha, eta, omega into proper mathematical notation. This must take priority over plain italic formatting when the user explicitly asks for math format. For notation cleanup across the document, use targets with LaTeX-like expressions such as C_L, C_D, Re, \\alpha, \\eta, \\omega_z.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                targets: {
+                  type: "ARRAY",
+                  description: "Batch conversions for notation cleanup across the document. Use when the user asks to detect symbols, short forms, or convert all/every notation.",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      targetText: {
+                        type: "STRING",
+                        description: "Existing text to replace, for example CL, CD, Re, alpha, eta, omega-z."
+                      },
+                      latex: {
+                        type: "STRING",
+                        description: "Final math expression only, for example C_L, C_D, Re, \\alpha, \\eta, \\omega_z."
+                      },
+                      replaceAll: {
+                        type: "BOOLEAN",
+                        description: "Default true for batch notation cleanup."
+                      },
+                      matchCase: {
+                        type: "BOOLEAN",
+                        description: "Default true."
+                      },
+                      matchWholeWord: {
+                        type: "BOOLEAN",
+                        description: "Default true for scientific symbols."
+                      }
+                    },
+                    required: ["targetText", "latex"]
+                  }
+                },
+                targetText: {
+                  type: "STRING",
+                  description: "Existing text to replace when scope is document. Leave empty to replace current selection."
+                },
+                latex: {
+                  type: "STRING",
+                  description: "Final math expression only, for example C_L, C_D, x^2, or \\alpha."
+                },
+                scope: {
+                  type: "STRING",
+                  enum: ["selection", "document"],
+                  description: "Use selection when the user says select/selected word/text or here. Use document only when the user asks all/everywhere."
+                },
+                replaceAll: {
+                  type: "BOOLEAN",
+                  description: "True only when the user asks all/every occurrence."
+                }
+              },
+              required: ["latex"]
+            }
+          },
+          {
             name: "navigate_to_section",
             description: "Navigates to and selects a specific section of the document. Use this when the user asks to go to, scroll to, find, or jump to a particular part of the document (e.g., 'go to the introduction', 'scroll to paragraph 5', 'find the signature block', 'show me the definitions section'). This helps users quickly locate relevant content without manually scrolling.",
             parameters: {
@@ -1958,6 +2131,7 @@ NEVER reference "P14", "P15", "Paragraph 14", etc. in your response to the user.
 Instead, refer to locations continuously and naturally, e.g., "I updated the Introduction," "I fixed the second item in the list," "I modified the table row," or "I updated the highlighted text."
 
 TOOL SELECTION GUIDANCE:
+- The user's latest chat instruction has highest priority. Do not replace a specific user request with a generic formatting habit from these instructions.
 - Use the [P#] identifiers when calling tools, but never speak them to the user.
 - For simple text edits within a paragraph: use \`apply_redlines\`
 - For editing contiguous lists (adding/removing/reordering items): prefer \`edit_list\` to preserve formatting
@@ -1968,8 +2142,15 @@ TOOL SELECTION GUIDANCE:
 
 IMPORTANT: You have access to tools. You can chat and respond normally to questions. However, when the user asks for an action that involves manipulating the document, you should HEAVILY FAVOR using the corresponding tool rather than just describing the action.
 
+CRITICAL: If the user asks for "math format", "Word math", "MS Word math", "equation format", or "professional math style" for existing text, use \`convert_text_to_word_math\`. Do not use plain italic formatting for that request unless the user explicitly asks for italic only.
+CRITICAL: If the user says "select the word/text" or "here", operate on the current selection by default. Do not change every occurrence unless the user says all, every, throughout, or everywhere.
+SCIENTIFIC NOTATION CLEANUP:
+- If the user asks to detect symbols, short forms, coefficients, variables, or notation and convert them to math format, use \`convert_text_to_word_math\` with batch \`targets\`.
+- Convert common text notation into LaTeX-like math first, then insert Word math: CL -> C_L, CD -> C_D, C0 or C_0 -> C_0, Re -> Re, alpha -> \\alpha, beta -> \\beta, eta -> \\eta, omega -> \\omega, omega-z -> \\omega_z.
+- Word math already renders variables in mathematical italic style. Do not separately use \`format_text_occurrences\` for the same symbols unless the user explicitly asks for plain text italic formatting.
+- Only convert abbreviations that are clearly scientific notation in context. If ambiguous, ask a short clarification instead of changing unrelated text.
 CRITICAL: For plain text edits and inline formatting within existing paragraphs, use \`apply_redlines\`. For structural list/table/section edits, use the dedicated tools (\`edit_list\`, \`convert_headers_to_list\`, \`edit_table\`, \`edit_section\`).
-CRITICAL: For formatting-only requests where the existing text should remain the same, use \`format_text_occurrences\`, not \`apply_redlines\`. Examples: italicize every "CL"; make the "L" in "CL" subscript; superscript all "2" in "x2"; bold a repeated term.
+CRITICAL: For formatting-only requests where the existing text should remain the same and the user did NOT ask for Word math/equation format, use \`format_text_occurrences\`, not \`apply_redlines\`. Examples: italicize every "CL"; superscript all "2" in "x2"; bold a repeated term.
 CRITICAL: If the user asks to "Reply to a comment" by "changing textual content", you MUST call BOTH \`apply_redlines\` (to apply the text change) AND \`insert_comment\` (to insert the reply). Call them in the same turn.
 NEVER claim to have "added a sentence" or "changed text" if you have only called \`insert_comment\`.
 NEVER state that you have taken an action unless you have successfully invoked the corresponding tool.
@@ -2165,6 +2346,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           "highlight_text",
           "perform_research",
           "format_text_occurrences",
+          "convert_text_to_word_math",
           "navigate_to_section",
           "edit_list",
           "insert_list_item",
@@ -2408,6 +2590,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
           "highlight_text",
           "insert_word_equation",
           "format_text_occurrences",
+          "convert_text_to_word_math",
           "edit_list",
           "insert_list_item",
           "edit_table",
@@ -2432,6 +2615,7 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
               "perform_research": `Researching: "${instruction}"...`,
               "insert_word_equation": "Inserting Word equation...",
               "format_text_occurrences": "Applying text formatting...",
+              "convert_text_to_word_math": "Converting text to Word math...",
               "navigate_to_section": `Navigating to: "${instruction}"...`
             };
             const statusText = toolFriendlyNames[functionCall.name] || "Working...";
@@ -2546,6 +2730,25 @@ CRITICAL: Do NOT use internal paragraph markers (like [P#] or P#) or internal ID
             toolsExecutedInCurrentRequest.push({
               name: functionCall.name,
               instruction: "format_text_occurrences",
+              result: toolResult,
+              success: result.showToUser
+            });
+
+            updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
+          } else if (functionCall.name === "convert_text_to_word_math") {
+            const result = await executeConvertTextToWordMath(
+              args.targetText || "",
+              args.latex || "",
+              args.scope || "selection",
+              !!args.replaceAll,
+              args.targets || null
+            );
+            toolResult = result.message;
+            toolSucceeded = !!result.showToUser;
+
+            toolsExecutedInCurrentRequest.push({
+              name: functionCall.name,
+              instruction: "convert_text_to_word_math",
               result: toolResult,
               success: result.showToUser
             });
