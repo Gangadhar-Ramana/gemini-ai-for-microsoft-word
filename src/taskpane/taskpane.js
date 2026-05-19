@@ -1087,6 +1087,158 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   };
 }
 
+function normalizeWordInsertLocation(location, fallback = Word.InsertLocation.replace) {
+  const normalized = String(location || "").toLowerCase();
+  if (normalized === "start" || normalized === "before") return Word.InsertLocation.start;
+  if (normalized === "end" || normalized === "after") return Word.InsertLocation.end;
+  if (normalized === "replace") return Word.InsertLocation.replace;
+  return fallback;
+}
+
+function applyFontPlan(range, fontPlan = {}) {
+  if (fontPlan.bold !== undefined) range.font.bold = !!fontPlan.bold;
+  if (fontPlan.italic !== undefined) range.font.italic = !!fontPlan.italic;
+  if (fontPlan.underline !== undefined) {
+    range.font.underline = fontPlan.underline ? Word.UnderlineType.single : Word.UnderlineType.none;
+  }
+  if (fontPlan.strikethrough !== undefined) range.font.strikeThrough = !!fontPlan.strikethrough;
+  if (fontPlan.subscript !== undefined) {
+    range.font.subscript = !!fontPlan.subscript;
+    if (fontPlan.subscript) range.font.superscript = false;
+  }
+  if (fontPlan.superscript !== undefined) {
+    range.font.superscript = !!fontPlan.superscript;
+    if (fontPlan.superscript) range.font.subscript = false;
+  }
+  if (fontPlan.color) range.font.color = fontPlan.color;
+  if (fontPlan.size) range.font.size = Number(fontPlan.size);
+  if (fontPlan.name) range.font.name = String(fontPlan.name);
+}
+
+function applyParagraphPlan(paragraph, paragraphPlan = {}) {
+  if (paragraphPlan.style) paragraph.style = String(paragraphPlan.style);
+  if (paragraphPlan.alignment) paragraph.alignment = paragraphPlan.alignment;
+  if (paragraphPlan.spaceBefore !== undefined) paragraph.spaceBefore = Number(paragraphPlan.spaceBefore);
+  if (paragraphPlan.spaceAfter !== undefined) paragraph.spaceAfter = Number(paragraphPlan.spaceAfter);
+  if (paragraphPlan.lineSpacing !== undefined) paragraph.lineSpacing = Number(paragraphPlan.lineSpacing);
+  if (paragraphPlan.leftIndent !== undefined) paragraph.leftIndent = Number(paragraphPlan.leftIndent);
+  if (paragraphPlan.firstLineIndent !== undefined) paragraph.firstLineIndent = Number(paragraphPlan.firstLineIndent);
+}
+
+async function executeRunWordScript(operations = [], description = "") {
+  if (!Array.isArray(operations) || operations.length === 0) {
+    return {
+      message: "No Word script operations were provided.",
+      showToUser: false,
+      success: false
+    };
+  }
+
+  const checkpointIndex = await createCheckpoint(true);
+  let appliedCount = 0;
+  const errors = [];
+
+  await Word.run(async (context) => {
+    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeRunWordScript");
+    try {
+      for (const operation of operations.slice(0, 50)) {
+        try {
+          const action = String(operation?.action || "").toLowerCase();
+          const scope = String(operation?.scope || "selection").toLowerCase();
+          const targetText = String(operation?.targetText || operation?.text || "");
+          const replaceAll = operation?.replaceAll === true || scope === "document";
+          const matchWholeWord = operation?.matchWholeWord !== false;
+          const matchCase = operation?.matchCase !== false;
+
+          const getRanges = async () => {
+            if (scope === "selection" && !targetText) {
+              return [context.document.getSelection()];
+            }
+            if (!targetText) {
+              throw new Error(`${action || "Word script"} requires targetText unless scope is selection.`);
+            }
+            const searchScope = scope === "selection"
+              ? context.document.getSelection()
+              : context.document.body;
+            const results = searchScope.search(targetText, { matchCase, matchWholeWord });
+            results.load("items/text");
+            await context.sync();
+            return replaceAll ? results.items : results.items.slice(0, 1);
+          };
+
+          if (action === "select_text") {
+            const ranges = await getRanges();
+            if (ranges[0]) {
+              ranges[0].select();
+              appliedCount++;
+            }
+          } else if (action === "highlight" || action === "highlight_text") {
+            for (const range of await getRanges()) {
+              range.font.highlightColor = operation.color || "yellow";
+              appliedCount++;
+            }
+          } else if (action === "format_text") {
+            for (const range of await getRanges()) {
+              applyFontPlan(range, operation.font || operation);
+              appliedCount++;
+            }
+          } else if (action === "replace_text") {
+            for (const range of await getRanges()) {
+              const insertedRange = range.insertText(String(operation.replacementText || ""), Word.InsertLocation.replace);
+              if (operation.font) applyFontPlan(insertedRange, operation.font);
+              appliedCount++;
+            }
+          } else if (action === "insert_text") {
+            const selection = context.document.getSelection();
+            const insertedRange = selection.insertText(String(operation.text || ""), normalizeWordInsertLocation(operation.location, Word.InsertLocation.end));
+            if (operation.font) applyFontPlan(insertedRange, operation.font);
+            appliedCount++;
+          } else if (action === "convert_inline_math") {
+            const inlineSpec = buildInlineMathSpec(operation.latex || operation.replacementText || targetText, targetText);
+            for (const range of await getRanges()) {
+              await applyInlineMathFormatting(context, range, inlineSpec);
+              appliedCount++;
+            }
+          } else if (action === "insert_equation" || action === "insert_word_equation") {
+            const equationOoxml = buildWordEquationOoxml(operation.latex || "", operation.title || "");
+            const selection = context.document.getSelection();
+            selection.insertOoxml(equationOoxml, normalizeWordInsertLocation(operation.location, Word.InsertLocation.replace));
+            appliedCount++;
+          } else if (action === "set_paragraph_format") {
+            const paragraphs = scope === "document"
+              ? context.document.body.paragraphs
+              : context.document.getSelection().paragraphs;
+            paragraphs.load("items");
+            await context.sync();
+            for (const paragraph of paragraphs.items) {
+              applyParagraphPlan(paragraph, operation.paragraph || operation);
+              appliedCount++;
+            }
+          } else {
+            errors.push(`Unsupported action: ${operation?.action || "(missing)"}`);
+          }
+        } catch (operationError) {
+          errors.push(operationError.message || String(operationError));
+        }
+      }
+      await context.sync();
+    } finally {
+      await restoreChangeTracking(context, trackingState, "executeRunWordScript");
+    }
+  });
+
+  const errorSuffix = errors.length > 0 ? ` ${errors.length} operation(s) could not be applied.` : "";
+  return {
+    message: appliedCount > 0
+      ? `Applied ${appliedCount} Word script operation(s).${errorSuffix}`
+      : `No Word script operations were applied.${errorSuffix}`,
+    showToUser: appliedCount > 0,
+    success: appliedCount > 0,
+    checkpointIndex,
+    description
+  };
+}
+
 async function applyNestedScriptFormatting(context, parentRange, nestedText, scriptType) {
   const text = String(nestedText || "").trim();
   if (!text) return;
@@ -2020,6 +2172,118 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
             }
           },
           {
+            name: "run_word_script",
+            description: "Execute a safe JSON plan of Word document actions through Office.js. Use this when the user asks for a combined Word task, formatting/style/spacing work, or a document action that is clearer as ordered steps. This does not run arbitrary JavaScript; it runs only the allowed operation actions. Prefer narrower tools for simple single-purpose requests.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                description: {
+                  type: "STRING",
+                  description: "Brief plain-language summary of what the plan will do."
+                },
+                operations: {
+                  type: "ARRAY",
+                  description: "Ordered Word operations. Keep the plan small and direct.",
+                  items: {
+                    type: "OBJECT",
+                    properties: {
+                      action: {
+                        type: "STRING",
+                        enum: [
+                          "select_text",
+                          "highlight_text",
+                          "format_text",
+                          "replace_text",
+                          "insert_text",
+                          "convert_inline_math",
+                          "insert_word_equation",
+                          "set_paragraph_format"
+                        ],
+                        description: "Allowed operation to execute."
+                      },
+                      scope: {
+                        type: "STRING",
+                        enum: ["selection", "document"],
+                        description: "Use selection for selected/current text; use document for all/every/throughout."
+                      },
+                      targetText: {
+                        type: "STRING",
+                        description: "Exact existing text to find. Required except for current-selection operations and insertion."
+                      },
+                      replacementText: {
+                        type: "STRING",
+                        description: "Replacement text for replace_text or source text for conversion."
+                      },
+                      text: {
+                        type: "STRING",
+                        description: "Text to insert or find, depending on action."
+                      },
+                      latex: {
+                        type: "STRING",
+                        description: "LaTeX content for math conversion/equation actions, with no prose."
+                      },
+                      title: {
+                        type: "STRING",
+                        description: "Optional equation title only when requested."
+                      },
+                      location: {
+                        type: "STRING",
+                        enum: ["cursor", "start", "end", "replace", "before", "after"],
+                        description: "Insertion location. Default is cursor/replace for equation, end for inserted text."
+                      },
+                      replaceAll: {
+                        type: "BOOLEAN",
+                        description: "True for all/every occurrence. False for one occurrence."
+                      },
+                      matchCase: {
+                        type: "BOOLEAN",
+                        description: "Default true."
+                      },
+                      matchWholeWord: {
+                        type: "BOOLEAN",
+                        description: "Default true."
+                      },
+                      color: {
+                        type: "STRING",
+                        description: "Highlight or font color, for example yellow or #ff0000."
+                      },
+                      font: {
+                        type: "OBJECT",
+                        properties: {
+                          bold: { type: "BOOLEAN" },
+                          italic: { type: "BOOLEAN" },
+                          underline: { type: "BOOLEAN" },
+                          strikethrough: { type: "BOOLEAN" },
+                          subscript: { type: "BOOLEAN" },
+                          superscript: { type: "BOOLEAN" },
+                          color: { type: "STRING" },
+                          size: { type: "NUMBER" },
+                          name: { type: "STRING" }
+                        },
+                        description: "Direct font formatting to apply."
+                      },
+                      paragraph: {
+                        type: "OBJECT",
+                        properties: {
+                          style: { type: "STRING" },
+                          alignment: { type: "STRING" },
+                          spaceBefore: { type: "NUMBER" },
+                          spaceAfter: { type: "NUMBER" },
+                          lineSpacing: { type: "NUMBER" },
+                          leftIndent: { type: "NUMBER" },
+                          firstLineIndent: { type: "NUMBER" }
+                        },
+                        description: "Paragraph formatting to apply."
+                      }
+                    },
+                    required: ["action"]
+                  }
+                }
+              },
+              required: ["operations"]
+            }
+          },
+          {
             name: "navigate_to_section",
             description: "Navigates to and selects a specific section of the document. Use this when the user asks to go to, scroll to, find, or jump to a particular part of the document (e.g., 'go to the introduction', 'scroll to paragraph 5', 'find the signature block', 'show me the definitions section'). This helps users quickly locate relevant content without manually scrolling.",
             parameters: {
@@ -2198,6 +2462,7 @@ AVAILABLE TOOL INTENT:
 - insert_word_equation: insert a standalone Word equation from LaTeX.
 - insert_comment: add comments.
 - highlight_text: highlight text.
+- run_word_script: execute a constrained JSON plan of Word operations when a task combines several actions or no narrower tool fits.
 - edit_list, insert_list_item, convert_headers_to_list: manipulate lists.
 - edit_table: manipulate tables.
 - edit_section: manipulate structured sections.
@@ -2618,6 +2883,7 @@ AVAILABLE TOOL INTENT:
           "insert_word_equation",
           "format_text_occurrences",
           "convert_text_to_word_math",
+          "run_word_script",
           "edit_list",
           "insert_list_item",
           "edit_table",
@@ -2643,6 +2909,7 @@ AVAILABLE TOOL INTENT:
               "insert_word_equation": "Inserting Word equation...",
               "format_text_occurrences": "Applying text formatting...",
               "convert_text_to_word_math": "Converting text to Word math...",
+              "run_word_script": "Running Word action plan...",
               "navigate_to_section": `Navigating to: "${instruction}"...`
             };
             const statusText = toolFriendlyNames[functionCall.name] || "Working...";
@@ -2778,6 +3045,22 @@ AVAILABLE TOOL INTENT:
               instruction: "convert_text_to_word_math",
               result: toolResult,
               success: result.showToUser
+            });
+
+            updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
+          } else if (functionCall.name === "run_word_script") {
+            const result = await executeRunWordScript(
+              args.operations || [],
+              args.description || ""
+            );
+            toolResult = result.message;
+            toolSucceeded = !!result.success;
+
+            toolsExecutedInCurrentRequest.push({
+              name: functionCall.name,
+              instruction: args.description || "run_word_script",
+              result: toolResult,
+              success: result.success
             });
 
             updateSystemMessage(loadingMsg, toolResult, result.checkpointIndex);
