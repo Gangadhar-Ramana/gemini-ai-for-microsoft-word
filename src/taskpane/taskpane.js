@@ -1163,8 +1163,9 @@ function applyParagraphPlan(paragraph, paragraphPlan = {}) {
   if (paragraphPlan.firstLineIndent !== undefined) paragraph.firstLineIndent = Number(paragraphPlan.firstLineIndent);
 }
 
-async function executeRunWordScript(operations = [], description = "") {
-  if (!Array.isArray(operations) || operations.length === 0) {
+async function executeRunWordScript(operations = [], description = "", javascript = "") {
+  const script = String(javascript || "").trim();
+  if ((!Array.isArray(operations) || operations.length === 0) && !script) {
     return {
       message: "No Word script operations were provided.",
       showToUser: false,
@@ -1179,6 +1180,24 @@ async function executeRunWordScript(operations = [], description = "") {
   await Word.run(async (context) => {
     const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeRunWordScript");
     try {
+      if (script) {
+        const runGeneratedScript = new Function(
+          "Word",
+          "Office",
+          "context",
+          "helpers",
+          `"use strict"; return (async () => {\n${script}\n})();`
+        );
+        await runGeneratedScript(Word, Office, context, {
+          buildWordEquationOoxml,
+          buildInlineMathSpec,
+          applyInlineMathFormatting,
+          escapeXml,
+          wrapInDocumentFragment
+        });
+        appliedCount++;
+      }
+
       for (const operation of operations.slice(0, 50)) {
         try {
           const action = String(operation?.action || "").toLowerCase();
@@ -2211,7 +2230,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
           },
           {
             name: "run_word_script",
-            description: "Execute a safe JSON plan of Word document actions through Office.js. Use this when the user asks for a combined Word task, formatting/style/spacing work, or a document action that is clearer as ordered steps. This does not run arbitrary JavaScript; it runs only the allowed operation actions. Prefer narrower tools for simple single-purpose requests.",
+            description: "Run Microsoft Word Office.js code or an ordered JSON plan to modify the open document. Use this freely for document-editing tasks when direct scripting is more capable than the narrow tools. A checkpoint is created before execution so the user can revert. If using javascript, write only the body of an async function that receives Word, Office, context, and helpers; call await context.sync() after queued Word operations.",
             parameters: {
               type: "OBJECT",
               properties: {
@@ -2219,9 +2238,13 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                   type: "STRING",
                   description: "Brief plain-language summary of what the plan will do."
                 },
+                javascript: {
+                  type: "STRING",
+                  description: "Office.js script body to run inside Word.run. You may use context.document, Word.InsertLocation, context.sync(), and helpers.buildWordEquationOoxml(latex,title). Do not wrap in function syntax."
+                },
                 operations: {
                   type: "ARRAY",
-                  description: "Ordered Word operations. Keep the plan small and direct.",
+                  description: "Optional ordered Word operations if a JSON plan is easier than javascript.",
                   items: {
                     type: "OBJECT",
                     properties: {
@@ -2317,8 +2340,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                     required: ["action"]
                   }
                 }
-              },
-              required: ["operations"]
+              }
             }
           },
           {
@@ -2486,11 +2508,12 @@ The document text includes internal markers such as [P#], list levels, table pos
 
 AGENT BEHAVIOR:
 - Follow the user's latest chat instruction first.
-- Inspect the provided document context and choose the best available Word tool yourself.
-- When the user asks for document changes, use tools rather than only explaining.
+- Think like a Word co-worker: inspect the document context, decide the action, and execute it.
+- When the user asks for a document change, prefer run_word_script with Office.js if that gives you the most direct control.
 - Prefer the current selection when the user says selected text, this, here, or highlighted text.
 - Use the whole document when the user says all, every, throughout, or when the request clearly applies globally.
-- If the request is ambiguous or cannot be done with the available tools, ask a short clarification or explain the limitation in chat.
+- If you need to edit Word formatting, equations, paragraphs, tables, comments, selection, or styles, write Office.js in run_word_script instead of only explaining.
+- If the request is genuinely ambiguous, ask one short clarification.
 - After a successful tool call, give a brief completion message.
 
 AVAILABLE TOOL INTENT:
@@ -2500,7 +2523,7 @@ AVAILABLE TOOL INTENT:
 - insert_word_equation: insert a standalone Word equation from LaTeX.
 - insert_comment: add comments.
 - highlight_text: highlight text.
-- run_word_script: execute a constrained JSON plan of Word operations when a task combines several actions or no narrower tool fits.
+- run_word_script: run generated Office.js or a JSON plan against the open Word document with a revert checkpoint.
 - edit_list, insert_list_item, convert_headers_to_list: manipulate lists.
 - edit_table: manipulate tables.
 - edit_section: manipulate structured sections.
@@ -3089,7 +3112,8 @@ AVAILABLE TOOL INTENT:
           } else if (functionCall.name === "run_word_script") {
             const result = await executeRunWordScript(
               args.operations || [],
-              args.description || ""
+              args.description || "",
+              args.javascript || ""
             );
             toolResult = result.message;
             toolSucceeded = !!result.success;
