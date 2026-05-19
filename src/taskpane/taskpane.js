@@ -911,6 +911,31 @@ async function applyInlineMathFormatting(context, range, inlineSpec) {
   }
 }
 
+async function replaceTextWithInlineMath(context, targetText, latex, replaceAll = true, options = {}) {
+  const textToFind = String(targetText || "").trim();
+  const inlineSpec = buildInlineMathSpec(latex || textToFind, textToFind);
+  if (!textToFind || !inlineSpec) return 0;
+
+  const searchScope = options.scope === "selection"
+    ? context.document.getSelection()
+    : context.document.body;
+  const ranges = searchScope.search(textToFind, {
+    matchCase: options.matchCase !== false,
+    matchWholeWord: options.matchWholeWord !== false
+  });
+  ranges.load("items/text");
+  await context.sync();
+
+  const rangesToConvert = replaceAll ? ranges.items : ranges.items.slice(0, 1);
+  let convertedCount = 0;
+  for (const range of rangesToConvert) {
+    await applyInlineMathFormatting(context, range, inlineSpec);
+    convertedCount++;
+  }
+  await context.sync();
+  return convertedCount;
+}
+
 function buildWordEquationOoxml(latex, title) {
   const parts = [];
   if (title && title.trim()) {
@@ -973,20 +998,17 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
           const equationLatex = String(target?.latex || "").trim();
           if (!textToFind || !equationLatex) continue;
 
-          const inlineSpec = buildInlineMathSpec(equationLatex, textToFind);
-          const ranges = context.document.body.search(textToFind, {
-            matchCase: target.matchCase !== false,
-            matchWholeWord: target.matchWholeWord !== false
-          });
-          ranges.load("items/text");
-          await context.sync();
-
-          const replaceEveryOccurrence = target.replaceAll !== false;
-          const rangesToConvert = replaceEveryOccurrence ? ranges.items : ranges.items.slice(0, 1);
-          for (const range of rangesToConvert) {
-            await applyInlineMathFormatting(context, range, inlineSpec);
-            convertedCount++;
-          }
+          convertedCount += await replaceTextWithInlineMath(
+            context,
+            textToFind,
+            equationLatex,
+            target.replaceAll !== false,
+            {
+              scope: "document",
+              matchCase: target.matchCase !== false,
+              matchWholeWord: target.matchWholeWord !== false
+            }
+          );
         }
 
         await context.sync();
@@ -1027,19 +1049,13 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
         await applyInlineMathFormatting(context, selection, inlineSpec);
         convertedCount = 1;
       } else {
-        const searchScope = context.document.body;
-        const ranges = searchScope.search(textToFind, {
-          matchCase: true,
-          matchWholeWord: true
-        });
-        ranges.load("items/text");
-        await context.sync();
-
-        const rangesToConvert = replaceAll ? ranges.items : ranges.items.slice(0, 1);
-        for (const range of rangesToConvert) {
-          await applyInlineMathFormatting(context, range, inlineSpec);
-          convertedCount++;
-        }
+        convertedCount = await replaceTextWithInlineMath(
+          context,
+          textToFind,
+          equationLatex,
+          replaceAll,
+          { scope: "document", matchCase: true, matchWholeWord: true }
+        );
       }
 
       await context.sync();
@@ -1192,6 +1208,7 @@ async function executeRunWordScript(operations = [], description = "", javascrip
           buildWordEquationOoxml,
           buildInlineMathSpec,
           applyInlineMathFormatting,
+          replaceTextWithInlineMath,
           escapeXml,
           wrapInDocumentFragment
         });
@@ -2240,7 +2257,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                 },
                 javascript: {
                   type: "STRING",
-                  description: "Office.js script body to run inside Word.run. You may use context.document, Word.InsertLocation, context.sync(), and helpers.buildWordEquationOoxml(latex,title). Do not wrap in function syntax."
+                  description: "Office.js script body to run inside Word.run. You may use context.document, Word.InsertLocation, context.sync(), helpers.buildWordEquationOoxml(latex,title), and helpers.replaceTextWithInlineMath(context,targetText,latex,replaceAll,options). For CL to C subscript L across the document, use: const count = await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true }); Do not wrap in function syntax."
                 },
                 operations: {
                   type: "ARRAY",
@@ -2513,6 +2530,7 @@ AGENT BEHAVIOR:
 - Prefer the current selection when the user says selected text, this, here, or highlighted text.
 - Use the whole document when the user says all, every, throughout, or when the request clearly applies globally.
 - If you need to edit Word formatting, equations, paragraphs, tables, comments, selection, or styles, write Office.js in run_word_script instead of only explaining.
+- For inline notation such as CL -> C_L, CD -> C_D, Re, alpha, omega, use run_word_script javascript with helpers.replaceTextWithInlineMath(context, targetText, latex, replaceAll, options). Example: const count = await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true });
 - If the request is genuinely ambiguous, ask one short clarification.
 - After a successful tool call, give a brief completion message.
 
