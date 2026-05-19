@@ -860,6 +860,7 @@ function buildInlineMathSpec(latex, fallbackText = "") {
 }
 
 async function applyInlineMathFormatting(context, range, inlineSpec) {
+  if (!inlineSpec) return;
   const insertedRange = range.insertText(inlineSpec.text, Word.InsertLocation.replace);
   insertedRange.font.italic = !!inlineSpec.italic;
   await context.sync();
@@ -927,7 +928,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
     let convertedCount = 0;
 
     await Word.run(async (context) => {
-      const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeConvertTextToWordMathBatch");
+      const trackingState = await setChangeTrackingForAi(context, false, "executeConvertTextToWordMathBatch");
       try {
         for (const target of targets) {
           const textToFind = String(target?.targetText || target?.text || "").trim();
@@ -981,7 +982,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
   let convertedCount = 0;
 
   await Word.run(async (context) => {
-    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeConvertTextToWordMath");
+    const trackingState = await setChangeTrackingForAi(context, false, "executeConvertTextToWordMath");
     try {
       if (requestedScope === "selection" || !textToFind) {
         const selection = context.document.getSelection();
@@ -991,7 +992,7 @@ async function executeConvertTextToWordMath(targetText, latex, scope = "selectio
         const searchScope = context.document.body;
         const ranges = searchScope.search(textToFind, {
           matchCase: true,
-          matchWholeWord: !!replaceAll
+          matchWholeWord: true
         });
         ranges.load("items/text");
         await context.sync();
@@ -1058,7 +1059,7 @@ function buildDirectInlineMathCommand(userMessage, docSelection) {
       targetText: explicitKnown.targetText,
       latex: explicitKnown.latex,
       scope: "document",
-      replaceAll
+      replaceAll: selectedText ? replaceAll : true
     };
   }
 
@@ -1069,7 +1070,7 @@ function buildDirectInlineMathCommand(userMessage, docSelection) {
       targetText: symbol,
       latex: `${symbol[0]}_${symbol.slice(1)}`,
       scope: "document",
-      replaceAll
+      replaceAll: selectedText ? replaceAll : true
     };
   }
 
