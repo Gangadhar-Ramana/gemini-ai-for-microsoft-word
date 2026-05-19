@@ -2532,7 +2532,7 @@ AGENT BEHAVIOR:
 - If you need to edit Word formatting, equations, paragraphs, tables, comments, selection, or styles, write Office.js in run_word_script instead of only explaining.
 - For inline notation such as CL -> C_L, CD -> C_D, Re, alpha, omega, use run_word_script javascript with helpers.replaceTextWithInlineMath(context, targetText, latex, replaceAll, options). Example: const count = await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true });
 - If the request is genuinely ambiguous, ask one short clarification.
-- After a successful tool call, give a brief completion message.
+- After a successful tool call, give a full chat response explaining what you did, which tool/script path you used, what changed in the document, and any limitation or uncertainty. Do not expose hidden chain-of-thought, but do explain your practical reasoning and the action result clearly.
 
 AVAILABLE TOOL INTENT:
 - apply_redlines: rewrite, replace, delete, add, or edit document text with tracked changes.
@@ -2898,7 +2898,12 @@ AVAILABLE TOOL INTENT:
         // Handle empty STOP responses gracefully (silent success)
         if (candidate.finishReason === "STOP") {
           console.log("Gemini returned empty parts with finishReason: STOP. Treating as silent success.");
-          parts = [{ text: "Task completed successfully." }];
+          const successMessage = generateSuccessMessage(toolsExecutedInCurrentRequest);
+          parts = [{
+            text: successMessage
+              ? `${successMessage}\n\nI completed the Word action and preserved the revert checkpoint shown above.`
+              : "Task completed successfully."
+          }];
         } else if (candidate.finishReason === "UNEXPECTED_TOOL_CALL" || candidate.finishReason === "MALFORMED_FUNCTION_CALL") {
           // The model tried to call a tool but the call was malformed/unexpected
           // and we couldn't recover it. Ask the model to retry without a tool call.
@@ -3353,18 +3358,6 @@ AVAILABLE TOOL INTENT:
           role: "user",
           parts: functionResponses
         });
-
-        if (successfulMutatingToolsThisLoop > 0) {
-          const successMessage = generateSuccessMessage(toolsExecutedInCurrentRequest)
-            || "Task completed successfully.";
-          addMessageToChat("Gemini", successMessage);
-          chatHistory.push({
-            role: "model",
-            parts: [{ text: successMessage }]
-          });
-          keepLooping = false;
-          break;
-        }
 
         if (attemptedMutatingToolsThisLoop > 0 && successfulMutatingToolsThisLoop === 0) {
           const noProgressSignature = failedMutationSignatures.join("||").slice(0, 2000);
