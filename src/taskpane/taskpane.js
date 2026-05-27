@@ -1108,7 +1108,7 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   let matchedCount = 0;
 
   await Word.run(async (context) => {
-    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeFormatTextOccurrences");
+    const trackingState = await setChangeTrackingForAi(context, false, "executeFormatTextOccurrences");
     try {
       const searchScope = requestedScope === "selection"
         ? context.document.getSelection()
@@ -1128,6 +1128,13 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
         for (const range of ranges.items) {
           matchedCount++;
           let rangeChanged = false;
+          const replacementHtml = buildFormattedTextHtml(range.text || text, target);
+          if (replacementHtml) {
+            range.insertHtml(replacementHtml, Word.InsertLocation.replace);
+            formattedCount++;
+            continue;
+          }
+
           if (target.bold !== undefined) range.font.bold = !!target.bold;
           if (target.italic !== undefined) range.font.italic = !!target.italic;
           if (target.underline !== undefined) {
@@ -1178,6 +1185,38 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
     showToUser: formattedCount > 0,
     checkpointIndex
   };
+}
+
+function buildFormattedTextHtml(text, target = {}) {
+  const sourceText = String(text || "");
+  if (!sourceText) return "";
+
+  const subscriptText = normalizeNestedScriptText(target.subscriptText);
+  const superscriptText = normalizeNestedScriptText(target.superscriptText);
+  const scriptText = subscriptText || superscriptText;
+  const tagName = subscriptText ? "sub" : superscriptText ? "sup" : "";
+
+  if (!scriptText || !tagName) return "";
+
+  const scriptIndex = sourceText.indexOf(scriptText);
+  if (scriptIndex < 0) return "";
+
+  const before = sourceText.slice(0, scriptIndex);
+  const script = sourceText.slice(scriptIndex, scriptIndex + scriptText.length);
+  const after = sourceText.slice(scriptIndex + scriptText.length);
+  let html = `${escapeXml(before)}<${tagName}>${escapeXml(script)}</${tagName}>${escapeXml(after)}`;
+
+  const styles = [];
+  if (target.italic === true) styles.push("font-style: italic");
+  if (target.bold === true) styles.push("font-weight: bold");
+  if (target.underline === true) styles.push("text-decoration: underline");
+  if (target.strikethrough === true) styles.push("text-decoration: line-through");
+
+  if (styles.length > 0) {
+    html = `<span style="${styles.join("; ")};">${html}</span>`;
+  }
+
+  return html;
 }
 
 function normalizeWordInsertLocation(location, fallback = Word.InsertLocation.replace) {
