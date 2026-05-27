@@ -1084,6 +1084,7 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   const checkpointIndex = await createCheckpoint(true);
   const requestedScope = String(scope || "document").toLowerCase();
   let formattedCount = 0;
+  let matchedCount = 0;
 
   await Word.run(async (context) => {
     const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeFormatTextOccurrences");
@@ -1104,25 +1105,40 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
         await context.sync();
 
         for (const range of ranges.items) {
+          matchedCount++;
+          let rangeChanged = false;
           if (target.bold !== undefined) range.font.bold = !!target.bold;
           if (target.italic !== undefined) range.font.italic = !!target.italic;
           if (target.underline !== undefined) {
             range.font.underline = target.underline ? Word.UnderlineType.single : Word.UnderlineType.none;
           }
-          if (target.strikethrough !== undefined) range.font.strikeThrough = !!target.strikethrough;
+          if (target.bold !== undefined || target.italic !== undefined || target.underline !== undefined) {
+            rangeChanged = true;
+          }
+          if (target.strikethrough !== undefined) {
+            range.font.strikeThrough = !!target.strikethrough;
+            rangeChanged = true;
+          }
 
           if (target.subscript === true) {
             range.font.subscript = true;
             range.font.superscript = false;
+            rangeChanged = true;
           }
           if (target.superscript === true) {
             range.font.superscript = true;
             range.font.subscript = false;
+            rangeChanged = true;
           }
 
-          await applyNestedScriptFormatting(context, range, target.subscriptText, "subscript");
-          await applyNestedScriptFormatting(context, range, target.superscriptText, "superscript");
-          formattedCount++;
+          const nestedSubscriptCount = await applyNestedScriptFormatting(context, range, target.subscriptText, "subscript");
+          const nestedSuperscriptCount = await applyNestedScriptFormatting(context, range, target.superscriptText, "superscript");
+          if (nestedSubscriptCount > 0 || nestedSuperscriptCount > 0) {
+            rangeChanged = true;
+          }
+          if (rangeChanged) {
+            formattedCount++;
+          }
         }
       }
 
@@ -1135,7 +1151,9 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   return {
     message: formattedCount > 0
       ? `Formatted ${formattedCount} text occurrence(s).`
-      : "No matching text was found to format.",
+      : matchedCount > 0
+        ? `Found ${matchedCount} matching text occurrence(s), but no nested formatting was applied.`
+        : "No matching text was found to format.",
     showToUser: formattedCount > 0,
     checkpointIndex
   };
@@ -1314,22 +1332,36 @@ async function executeRunWordScript(operations = [], description = "", javascrip
 }
 
 async function applyNestedScriptFormatting(context, parentRange, nestedText, scriptType) {
-  const text = String(nestedText || "").trim();
-  if (!text) return;
+  const text = normalizeNestedScriptText(nestedText);
+  if (!text) return 0;
 
   const nestedRanges = parentRange.search(text, { matchCase: true, matchWholeWord: false });
   nestedRanges.load("items/text");
   await context.sync();
 
+  let formattedCount = 0;
   for (const nestedRange of nestedRanges.items) {
     if (scriptType === "subscript") {
       nestedRange.font.subscript = true;
       nestedRange.font.superscript = false;
+      formattedCount++;
     } else if (scriptType === "superscript") {
       nestedRange.font.superscript = true;
       nestedRange.font.subscript = false;
+      formattedCount++;
     }
   }
+  return formattedCount;
+}
+
+function normalizeNestedScriptText(nestedText) {
+  let text = String(nestedText || "").trim();
+  if (!text) return "";
+  text = text.replace(/^`+|`+$/g, "").trim();
+  if ((text.startsWith('"') && text.endsWith('"')) || (text.startsWith("'") && text.endsWith("'"))) {
+    text = text.slice(1, -1).trim();
+  }
+  return text;
 }
 
 async function setChangeTrackingForAi(context, redlineEnabled, sourceLabel = "AI") {
