@@ -891,14 +891,35 @@ function buildInlineMathSpec(latex, fallbackText = "") {
 
   return {
     text,
+    baseText: base,
+    scriptText: script,
     italic: true,
     subscriptText: subscriptMatch ? script : "",
     superscriptText: superscriptMatch ? script : ""
   };
 }
 
+function buildInlineMathHtml(inlineSpec) {
+  if (!inlineSpec) return "";
+  const base = inlineSpec.baseText || inlineSpec.text || "";
+  const script = inlineSpec.scriptText || inlineSpec.subscriptText || inlineSpec.superscriptText || "";
+  const tagName = inlineSpec.subscriptText ? "sub" : inlineSpec.superscriptText ? "sup" : "";
+  const content = tagName
+    ? `${escapeXml(base)}<${tagName}>${escapeXml(script)}</${tagName}>`
+    : escapeXml(inlineSpec.text || base);
+  return inlineSpec.italic
+    ? `<span style="font-style: italic;">${content}</span>`
+    : `<span>${content}</span>`;
+}
+
 async function applyInlineMathFormatting(context, range, inlineSpec) {
   if (!inlineSpec) return;
+  if (inlineSpec.subscriptText || inlineSpec.superscriptText) {
+    range.insertHtml(buildInlineMathHtml(inlineSpec), Word.InsertLocation.replace);
+    await context.sync();
+    return;
+  }
+
   const insertedRange = range.insertText(inlineSpec.text, Word.InsertLocation.replace);
   insertedRange.font.italic = !!inlineSpec.italic;
   await context.sync();
@@ -1212,7 +1233,7 @@ async function executeRunWordScript(operations = [], description = "", javascrip
   const errors = [];
 
   await Word.run(async (context) => {
-    const trackingState = await setChangeTrackingForAi(context, loadRedlineSetting(), "executeRunWordScript");
+    const trackingState = await setChangeTrackingForAi(context, false, "executeRunWordScript");
     try {
       if (script) {
         const runGeneratedScript = new Function(
