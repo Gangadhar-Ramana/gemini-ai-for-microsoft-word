@@ -1105,72 +1105,11 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   const checkpointIndex = await createCheckpoint(true);
   const requestedScope = String(scope || "document").toLowerCase();
   let formattedCount = 0;
-  let matchedCount = 0;
 
   await Word.run(async (context) => {
     const trackingState = await setChangeTrackingForAi(context, false, "executeFormatTextOccurrences");
     try {
-      const searchScope = requestedScope === "selection"
-        ? context.document.getSelection()
-        : context.document.body;
-
-      for (const target of targets) {
-        const text = String(target?.text || "").trim();
-        if (!text) continue;
-
-        const ranges = searchScope.search(text, {
-          matchCase: target.matchCase !== false,
-          matchWholeWord: !!target.matchWholeWord
-        });
-        ranges.load("items/text");
-        await context.sync();
-
-        for (const range of ranges.items) {
-          matchedCount++;
-          let rangeChanged = false;
-          const replacementHtml = buildFormattedTextHtml(range.text || text, target);
-          if (replacementHtml) {
-            range.insertHtml(replacementHtml, Word.InsertLocation.replace);
-            formattedCount++;
-            continue;
-          }
-
-          if (target.bold !== undefined) range.font.bold = !!target.bold;
-          if (target.italic !== undefined) range.font.italic = !!target.italic;
-          if (target.underline !== undefined) {
-            range.font.underline = target.underline ? Word.UnderlineType.single : Word.UnderlineType.none;
-          }
-          if (target.bold !== undefined || target.italic !== undefined || target.underline !== undefined) {
-            rangeChanged = true;
-          }
-          if (target.strikethrough !== undefined) {
-            range.font.strikeThrough = !!target.strikethrough;
-            rangeChanged = true;
-          }
-
-          if (target.subscript === true) {
-            range.font.subscript = true;
-            range.font.superscript = false;
-            rangeChanged = true;
-          }
-          if (target.superscript === true) {
-            range.font.superscript = true;
-            range.font.subscript = false;
-            rangeChanged = true;
-          }
-
-          const nestedSubscriptCount = await applyNestedScriptFormatting(context, range, target.subscriptText, "subscript");
-          const nestedSuperscriptCount = await applyNestedScriptFormatting(context, range, target.superscriptText, "superscript");
-          if (nestedSubscriptCount > 0 || nestedSuperscriptCount > 0) {
-            rangeChanged = true;
-          }
-          if (rangeChanged) {
-            formattedCount++;
-          }
-        }
-      }
-
-      await context.sync();
+      formattedCount = await formatTextMatches(context, targets, { scope: requestedScope });
     } finally {
       await restoreChangeTracking(context, trackingState, "executeFormatTextOccurrences");
     }
@@ -1179,9 +1118,7 @@ async function executeFormatTextOccurrences(targets, scope = "document") {
   return {
     message: formattedCount > 0
       ? `Formatted ${formattedCount} text occurrence(s).`
-      : matchedCount > 0
-        ? `Found ${matchedCount} matching text occurrence(s), but no nested formatting was applied.`
-        : "No matching text was found to format.",
+      : "No matching text was found to format, or the requested formatting was empty.",
     showToUser: formattedCount > 0,
     checkpointIndex
   };
@@ -1211,12 +1148,97 @@ function buildFormattedTextHtml(text, target = {}) {
   if (target.bold === true) styles.push("font-weight: bold");
   if (target.underline === true) styles.push("text-decoration: underline");
   if (target.strikethrough === true) styles.push("text-decoration: line-through");
+  if (target.color || target.font?.color) styles.push(`color: ${normalizeWordColor(target.color || target.font.color)}`);
 
   if (styles.length > 0) {
     html = `<span style="${styles.join("; ")};">${html}</span>`;
   }
 
   return html;
+}
+
+function normalizeWordColor(color) {
+  const normalized = String(color || "").trim();
+  if (!normalized) return "";
+
+  const colorMap = {
+    blue: "#0000FF",
+    red: "#FF0000",
+    green: "#008000",
+    black: "#000000",
+    white: "#FFFFFF",
+    yellow: "#FFFF00",
+    cyan: "#00FFFF",
+    magenta: "#FF00FF",
+    gray: "#808080",
+    grey: "#808080"
+  };
+
+  return colorMap[normalized.toLowerCase()] || normalized;
+}
+
+function hasFontPlan(fontPlan = {}) {
+  return fontPlan.bold !== undefined
+    || fontPlan.italic !== undefined
+    || fontPlan.underline !== undefined
+    || fontPlan.strikethrough !== undefined
+    || fontPlan.subscript !== undefined
+    || fontPlan.superscript !== undefined
+    || !!fontPlan.color
+    || !!fontPlan.size
+    || !!fontPlan.name;
+}
+
+function normalizeFormatTargets(targets, defaults = {}) {
+  const rawTargets = Array.isArray(targets) ? targets : [targets];
+  return rawTargets
+    .map(target => {
+      if (typeof target === "string") {
+        return { ...defaults, text: target };
+      }
+      return { ...defaults, ...(target || {}) };
+    })
+    .filter(target => String(target.text || target.targetText || "").trim());
+}
+
+async function formatTextMatches(context, targets, options = {}) {
+  const normalizedTargets = normalizeFormatTargets(targets, options);
+  if (normalizedTargets.length === 0) return 0;
+
+  const requestedScope = String(options.scope || "document").toLowerCase();
+  const searchScope = requestedScope === "selection"
+    ? context.document.getSelection()
+    : context.document.body;
+  let formattedCount = 0;
+
+  for (const target of normalizedTargets) {
+    const text = String(target.text || target.targetText || "").trim();
+    if (!text) continue;
+
+    const ranges = searchScope.search(text, {
+      matchCase: target.matchCase !== false,
+      matchWholeWord: !!target.matchWholeWord
+    });
+    ranges.load("items/text");
+    await context.sync();
+
+    for (const range of ranges.items) {
+      const replacementHtml = buildFormattedTextHtml(range.text || text, target);
+      if (replacementHtml) {
+        range.insertHtml(replacementHtml, Word.InsertLocation.replace);
+        formattedCount++;
+        continue;
+      }
+
+      const fontPlan = { ...(target.font || {}), ...target };
+      if (applyFontPlan(range, fontPlan)) {
+        formattedCount++;
+      }
+    }
+  }
+
+  await context.sync();
+  return formattedCount;
 }
 
 function normalizeWordInsertLocation(location, fallback = Word.InsertLocation.replace) {
@@ -1228,23 +1250,42 @@ function normalizeWordInsertLocation(location, fallback = Word.InsertLocation.re
 }
 
 function applyFontPlan(range, fontPlan = {}) {
+  let changed = false;
   if (fontPlan.bold !== undefined) range.font.bold = !!fontPlan.bold;
   if (fontPlan.italic !== undefined) range.font.italic = !!fontPlan.italic;
   if (fontPlan.underline !== undefined) {
     range.font.underline = fontPlan.underline ? Word.UnderlineType.single : Word.UnderlineType.none;
   }
-  if (fontPlan.strikethrough !== undefined) range.font.strikeThrough = !!fontPlan.strikethrough;
+  if (fontPlan.bold !== undefined || fontPlan.italic !== undefined || fontPlan.underline !== undefined) {
+    changed = true;
+  }
+  if (fontPlan.strikethrough !== undefined) {
+    range.font.strikeThrough = !!fontPlan.strikethrough;
+    changed = true;
+  }
   if (fontPlan.subscript !== undefined) {
     range.font.subscript = !!fontPlan.subscript;
     if (fontPlan.subscript) range.font.superscript = false;
+    changed = true;
   }
   if (fontPlan.superscript !== undefined) {
     range.font.superscript = !!fontPlan.superscript;
     if (fontPlan.superscript) range.font.subscript = false;
+    changed = true;
   }
-  if (fontPlan.color) range.font.color = fontPlan.color;
-  if (fontPlan.size) range.font.size = Number(fontPlan.size);
-  if (fontPlan.name) range.font.name = String(fontPlan.name);
+  if (fontPlan.color) {
+    range.font.color = normalizeWordColor(fontPlan.color);
+    changed = true;
+  }
+  if (fontPlan.size) {
+    range.font.size = Number(fontPlan.size);
+    changed = true;
+  }
+  if (fontPlan.name) {
+    range.font.name = String(fontPlan.name);
+    changed = true;
+  }
+  return changed;
 }
 
 function applyParagraphPlan(paragraph, paragraphPlan = {}) {
@@ -1255,6 +1296,23 @@ function applyParagraphPlan(paragraph, paragraphPlan = {}) {
   if (paragraphPlan.lineSpacing !== undefined) paragraph.lineSpacing = Number(paragraphPlan.lineSpacing);
   if (paragraphPlan.leftIndent !== undefined) paragraph.leftIndent = Number(paragraphPlan.leftIndent);
   if (paragraphPlan.firstLineIndent !== undefined) paragraph.firstLineIndent = Number(paragraphPlan.firstLineIndent);
+}
+
+function getGeneratedScriptAppliedCount(scriptResult, helperAppliedCount = 0) {
+  const helperCount = Number(helperAppliedCount) || 0;
+  if (helperCount > 0) return helperCount;
+
+  if (typeof scriptResult === "number") {
+    return Math.max(0, scriptResult);
+  }
+  if (typeof scriptResult === "boolean") {
+    return scriptResult ? 1 : 0;
+  }
+  if (scriptResult && typeof scriptResult === "object") {
+    const count = Number(scriptResult.appliedCount ?? scriptResult.count ?? scriptResult.changedCount ?? scriptResult.formattedCount);
+    return Number.isFinite(count) ? Math.max(0, count) : 0;
+  }
+  return 0;
 }
 
 async function executeRunWordScript(operations = [], description = "", javascript = "") {
@@ -1282,15 +1340,32 @@ async function executeRunWordScript(operations = [], description = "", javascrip
           "helpers",
           `"use strict"; return (async () => {\n${script}\n})();`
         );
-        await runGeneratedScript(Word, Office, context, {
+        const scriptHelpers = {
           buildWordEquationOoxml,
           buildInlineMathSpec,
           applyInlineMathFormatting,
           replaceTextWithInlineMath,
+          formatTextMatches: async (targets, options = {}) => {
+            const count = await formatTextMatches(context, targets, options);
+            scriptHelpers.appliedCount += count;
+            return count;
+          },
+          recordApplied: (count = 1) => {
+            const applied = Number(count) || 0;
+            scriptHelpers.appliedCount += applied;
+            return applied;
+          },
+          appliedCount: 0,
           escapeXml,
           wrapInDocumentFragment
-        });
-        appliedCount++;
+        };
+        const scriptResult = await runGeneratedScript(Word, Office, context, scriptHelpers);
+        const reportedCount = getGeneratedScriptAppliedCount(scriptResult, scriptHelpers.appliedCount);
+        if (reportedCount > 0) {
+          appliedCount += reportedCount;
+        } else {
+          errors.push("Generated script ran but did not report any applied document changes.");
+        }
       }
 
       for (const operation of operations.slice(0, 50)) {
@@ -2243,6 +2318,10 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                       italic: { type: "BOOLEAN" },
                       underline: { type: "BOOLEAN" },
                       strikethrough: { type: "BOOLEAN" },
+                      color: {
+                        type: "STRING",
+                        description: "Font color for the matched text. Use hex like #0000FF for blue; plain blue is also accepted."
+                      },
                       subscript: {
                         type: "BOOLEAN",
                         description: "Set true only when the whole matched text should be subscript."
@@ -2349,7 +2428,7 @@ async function sendChatMessage(modelType = 'fast', messageOverride = null) {
                 },
                 javascript: {
                   type: "STRING",
-                  description: "Office.js script body to run inside Word.run. You may use context.document, Word.InsertLocation, context.sync(), helpers.buildWordEquationOoxml(latex,title), and helpers.replaceTextWithInlineMath(context,targetText,latex,replaceAll,options). For CL to C subscript L across the document, use: const count = await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true }); Do not wrap in function syntax."
+                  description: "Office.js script body to run inside Word.run. You may use context.document, Word.InsertLocation, context.sync(), helpers.buildWordEquationOoxml(latex,title), helpers.replaceTextWithInlineMath(context,targetText,latex,replaceAll,options), and helpers.formatTextMatches(targets,options). Return the changed count or use helpers.recordApplied(count). For blue CL/CD text, use: return await helpers.formatTextMatches([{ text: 'CL', color: '#0000FF', matchCase: true, matchWholeWord: true }, { text: 'CD', color: '#0000FF', matchCase: true, matchWholeWord: true }], { scope: 'document' }); For CL to C subscript L, use: return await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true }); Do not wrap in function syntax."
                 },
                 operations: {
                   type: "ARRAY",
@@ -2623,6 +2702,8 @@ AGENT BEHAVIOR:
 - Use the whole document when the user says all, every, throughout, or when the request clearly applies globally.
 - If you need to edit Word formatting, equations, paragraphs, tables, comments, selection, or styles, write Office.js in run_word_script instead of only explaining.
 - For inline notation such as CL -> C_L, CD -> C_D, Re, alpha, omega, use run_word_script javascript with helpers.replaceTextWithInlineMath(context, targetText, latex, replaceAll, options). Example: const count = await helpers.replaceTextWithInlineMath(context, 'CL', 'C_L', true, { scope: 'document', matchCase: true, matchWholeWord: true });
+- For direct font formatting such as blue/red/bold/italic words, use format_text_occurrences or run_word_script javascript with helpers.formatTextMatches. Example: return await helpers.formatTextMatches([{ text: 'CL', color: '#0000FF', matchCase: true, matchWholeWord: true }, { text: 'CD', color: '#0000FF', matchCase: true, matchWholeWord: true }], { scope: 'document' });
+- If you write generated javascript, return the changed count or call helpers.recordApplied(count). Do not claim success if the tool reports zero changes.
 - If the request is genuinely ambiguous, ask one short clarification.
 - After a successful tool call, give a full chat response explaining what you did, which tool/script path you used, what changed in the document, and any limitation or uncertainty. Do not expose hidden chain-of-thought, but do explain your practical reasoning and the action result clearly.
 
