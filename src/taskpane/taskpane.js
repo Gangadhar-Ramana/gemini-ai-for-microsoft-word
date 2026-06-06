@@ -5,7 +5,7 @@
  * Description: Word add-in integrating Google Gemini AI for document editing and analysis
  */
 
-/* global document, Office, Word, localStorage */
+/* global document, Office, Word, PowerPoint, localStorage */
 
 import { marked } from 'marked';
 import { diff_match_patch } from 'diff-match-patch';
@@ -143,6 +143,7 @@ const TIMEOUT_LIMITS = {
 
 // Global abort controller for cancelling requests
 let currentRequestController = null;
+let currentOfficeHost = null;
 /**
  * Extracts enhanced document context with rich formatting metadata.
  * Returns an object with enhanced paragraph notation and section mapping.
@@ -333,106 +334,133 @@ function generateSuccessMessage(executedTools = []) {
 }
 
 Office.onReady((info) => {
+  currentOfficeHost = info.host;
+
   if (info.host === Office.HostType.Word) {
     setPlatform(Office?.context?.platform);
     migrateDefaultModelSelections();
-    document.getElementById("sideload-msg").style.display = "none";
-    // Show main view by default
-    showMainView();
-
-    // Add event listener for the chat send button (Fast)
-    document.getElementById("send-button").onclick = () => sendChatMessage('fast');
-
-    // Add event listener for the THINK button (Slow)
-    document.getElementById("think-button").onclick = () => sendChatMessage('slow');
-
-    // Add Enter key support for chat (Shift+Enter for new line)
-    document.getElementById("chat-input").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        if (e.shiftKey) {
-          // Shift+Enter: New line (default behavior)
-          return;
-        }
-        e.preventDefault();
-        if (e.ctrlKey || e.metaKey) {
-          // Ctrl+Enter or Cmd+Enter: Thinking chat (slow)
-          sendChatMessage('slow');
-        } else {
-          // Enter: Regular chat (fast)
-          sendChatMessage('fast');
-        }
-      }
+    initializeOfficeUi({
+      sendHandler: sendChatMessage,
+      enableGlance: true,
+      welcomeText: "Welcome! Ask me to assist you in editing this document."
     });
+    return;
+  }
 
-    // Add event listeners for settings UI
-    document.getElementById("settings-button").onclick = showSettingsView;
-    document.getElementById("save-api-key").onclick = saveApiKey;
-    document.getElementById("back-to-main").onclick = showMainView;
-    document.getElementById("refresh-google-models-button").onclick = refreshGoogleModels;
-
-    // Add event listener for refresh chat button
-    document.getElementById("refresh-chat-button").onclick = refreshChat;
-
-    // Add event listener for Glance refresh
-    document.getElementById("refresh-glance-button").onclick = runGlanceChecks;
-    document.getElementById("toggle-glance-button").onclick = () => {
-      const container = document.getElementById("glance-container");
-      if (!container) return;
-      const shouldCollapse = !container.classList.contains("collapsed");
-      saveGlanceCollapsedState(shouldCollapse);
-      applyGlanceCollapsedState(shouldCollapse);
-    };
-
-    // Add event listener for Add Glance Card
-    document.getElementById("add-glance-card-button").onclick = () => {
-      const settings = loadGlanceSettings();
-      settings.push({
-        id: 'q' + Date.now(),
-        title: 'New Question',
-        question: 'What would you like to check?'
-      });
-      saveGlanceSettings(settings);
-      renderGlanceSettings();
-    };
-
-    // Check for API key on load
-    if (!loadApiKey()) {
-      showWelcomeScreen();
-    } else {
-      // Run Glance checks if key exists
-      renderGlanceMain();
-      runGlanceChecks();
-    }
-
-    // Accordion Event Listeners
-    setupAccordion("glance-settings-header", "glance-settings-content");
-    setupAccordion("advanced-settings-header", "advanced-settings-content");
-
-    // Scroll-to-bottom button setup
-    setupScrollToBottom();
-
-    // Add event listener for refresh author button
-    document.getElementById("refresh-author-button").onclick = async () => {
-      const author = await fetchDocumentAuthor();
-      if (author) {
-        document.getElementById("redline-author-input").value = author;
-        saveRedlineAuthor(author);
-      }
-    };
-
-    // Add event listeners for Redline settings
-    document.getElementById("redline-toggle").onchange = (e) => {
-      saveRedlineSetting(e.target.checked);
-    };
-
-    document.getElementById("redline-author-input").oninput = (e) => {
-      saveRedlineAuthor(e.target.value);
-    };
-
-    // Update checkpoint status on load (internal only now)
-    // updateCheckpointStatus(); // UI removed, but we can keep tracking internally if needed, or just remove this call.
+  if (info.host === Office.HostType.PowerPoint) {
+    migrateDefaultModelSelections();
+    initializeOfficeUi({
+      sendHandler: sendPowerPointChatMessage,
+      enableGlance: false,
+      welcomeText: "Welcome! Ask me to assist you in editing this presentation."
+    });
   }
 });
+
+function initializeOfficeUi({ sendHandler, enableGlance, welcomeText }) {
+  const sideloadMessage = document.getElementById("sideload-msg");
+  if (sideloadMessage) sideloadMessage.style.display = "none";
+
+  showMainView();
+  setWelcomeMessage(welcomeText);
+
+  document.getElementById("send-button").onclick = () => sendHandler('fast');
+  document.getElementById("think-button").onclick = () => sendHandler('slow');
+
+  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    if (e.shiftKey) return;
+    e.preventDefault();
+    sendHandler(e.ctrlKey || e.metaKey ? 'slow' : 'fast');
+  });
+
+  document.getElementById("settings-button").onclick = showSettingsView;
+  document.getElementById("save-api-key").onclick = saveApiKey;
+  document.getElementById("back-to-main").onclick = showMainView;
+  document.getElementById("refresh-google-models-button").onclick = refreshGoogleModels;
+  document.getElementById("refresh-chat-button").onclick = refreshChat;
+
+  setupAccordion("glance-settings-header", "glance-settings-content");
+  setupAccordion("advanced-settings-header", "advanced-settings-content");
+  setupScrollToBottom();
+
+  configureGlanceForHost(enableGlance);
+  configureWordOnlySettings(currentOfficeHost === Office.HostType.Word);
+
+  if (!loadApiKey()) {
+    showWelcomeScreen();
+  } else if (enableGlance) {
+    renderGlanceMain();
+    runGlanceChecks();
+  }
+}
+
+function setWelcomeMessage(text) {
+  const chatMessages = document.getElementById("chat-messages");
+  const firstMessage = chatMessages?.querySelector(".chat-message.system");
+  if (firstMessage) firstMessage.textContent = text;
+}
+
+function configureGlanceForHost(enableGlance) {
+  const glanceContainer = document.getElementById("glance-container");
+  const glanceSettingsHeader = document.getElementById("glance-settings-header");
+  const glanceSettingsContent = document.getElementById("glance-settings-content");
+  if (glanceContainer) glanceContainer.style.display = enableGlance ? "" : "none";
+  if (glanceSettingsHeader) glanceSettingsHeader.style.display = enableGlance ? "" : "none";
+  if (glanceSettingsContent) glanceSettingsContent.style.display = enableGlance ? "" : "none";
+
+  if (!enableGlance) return;
+
+  document.getElementById("refresh-glance-button").onclick = runGlanceChecks;
+  document.getElementById("toggle-glance-button").onclick = () => {
+    const container = document.getElementById("glance-container");
+    if (!container) return;
+    const shouldCollapse = !container.classList.contains("collapsed");
+    saveGlanceCollapsedState(shouldCollapse);
+    applyGlanceCollapsedState(shouldCollapse);
+  };
+
+  document.getElementById("add-glance-card-button").onclick = () => {
+    const settings = loadGlanceSettings();
+    settings.push({
+      id: 'q' + Date.now(),
+      title: 'New Question',
+      question: 'What would you like to check?'
+    });
+    saveGlanceSettings(settings);
+    renderGlanceSettings();
+  };
+}
+
+function configureWordOnlySettings(enableWordSettings) {
+  const refreshAuthorButton = document.getElementById("refresh-author-button");
+  const redlineToggle = document.getElementById("redline-toggle");
+  const redlineAuthorInput = document.getElementById("redline-author-input");
+
+  if (refreshAuthorButton) {
+    refreshAuthorButton.disabled = !enableWordSettings;
+    refreshAuthorButton.title = enableWordSettings ? "Pull name from Word" : "Word-only setting";
+    refreshAuthorButton.onclick = enableWordSettings
+      ? async () => {
+        const author = await fetchDocumentAuthor();
+        if (author) {
+          document.getElementById("redline-author-input").value = author;
+          saveRedlineAuthor(author);
+        }
+      }
+      : null;
+  }
+
+  if (redlineToggle) {
+    redlineToggle.disabled = !enableWordSettings;
+    redlineToggle.onchange = enableWordSettings ? (e) => saveRedlineSetting(e.target.checked) : null;
+  }
+
+  if (redlineAuthorInput) {
+    redlineAuthorInput.disabled = !enableWordSettings;
+    redlineAuthorInput.oninput = enableWordSettings ? (e) => saveRedlineAuthor(e.target.value) : null;
+  }
+}
 
 function showWelcomeScreen() {
   const chatMessages = document.getElementById("chat-messages");
@@ -578,7 +606,9 @@ function showMainView() {
 
   switchView("settings-view", "main-view");
 
-  renderGlanceMain();
+  if (currentOfficeHost === Office.HostType.Word) {
+    renderGlanceMain();
+  }
 }
 
 
@@ -613,7 +643,9 @@ function refreshChat() {
   // Add the welcome message back
   const welcomeMessage = document.createElement("div");
   welcomeMessage.className = "chat-message system";
-  welcomeMessage.textContent = "Welcome! Ask me to assist you in editing this document.";
+  welcomeMessage.textContent = currentOfficeHost === Office.HostType.PowerPoint
+    ? "Welcome! Ask me to assist you in editing this presentation."
+    : "Welcome! Ask me to assist you in editing this document.";
   chatMessages.appendChild(welcomeMessage);
 
   // Add a system message confirming the refresh
@@ -638,8 +670,9 @@ function saveApiKey() {
     // Glance settings are saved automatically on change
     showMainView();
     addMessageToChat("System", "Settings saved successfully.");
-    // Re-run checks with new settings
-    runGlanceChecks();
+    if (currentOfficeHost === Office.HostType.Word) {
+      runGlanceChecks();
+    }
   } else {
     addMessageToChat("System", "API Key cannot be empty.");
   }
@@ -2035,7 +2068,13 @@ registerChatUiHandlers({
       console.log('User cancelled request');
     }
   },
-  onRestoreCheckpoint: restoreCheckpoint
+  onRestoreCheckpoint: (index) => {
+    if (currentOfficeHost !== Office.HostType.Word) {
+      addMessageToChat("System", "Revert checkpoints are currently available for Word document edits only.");
+      return;
+    }
+    restoreCheckpoint(index);
+  }
 });
 
 // --- Chat Feature ---
@@ -3641,6 +3680,593 @@ AVAILABLE TOOL INTENT:
     if (thinkButton) thinkButton.disabled = false;
     chatInput.focus();
   }
+}
+
+async function sendPowerPointChatMessage(modelType = 'fast', messageOverride = null) {
+  const chatInput = document.getElementById("chat-input");
+  const sendButton = document.getElementById("send-button");
+  const thinkButton = document.getElementById("think-button");
+  const userMessage = messageOverride || chatInput.value;
+
+  if (userMessage.trim() === "") {
+    shakeInput();
+    return;
+  }
+
+  hideAllRetryButtons();
+  toolsExecutedInCurrentRequest = [];
+  chatHistory = sanitizeHistory(chatHistory);
+  currentRequestController = new AbortController();
+
+  chatInput.disabled = true;
+  sendButton.disabled = true;
+  if (thinkButton) thinkButton.disabled = true;
+
+  addMessageToChat("User", userMessage);
+  chatInput.value = "";
+
+  const loadingMsg = createTypingIndicator(modelType === 'slow' ? 'yellow' : 'teal', true);
+  const chatMessages = document.getElementById("chat-messages");
+  chatMessages.appendChild(loadingMsg);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  try {
+    const geminiApiKey = loadApiKey();
+    if (!geminiApiKey) {
+      removeMessage(loadingMsg);
+      addMessageToChat("Error", "Please set your Gemini API key in the Settings (click the gear icon in the top right).");
+      return;
+    }
+
+    const geminiModel = loadModel(modelType);
+    const useLiveApi = isLiveModel(geminiModel);
+    const presentationContext = await extractPowerPointContext();
+    const prompt = `${presentationContext}\n\nUser Request:\n${userMessage}`;
+
+    chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+    if (chatHistory.length > 10) {
+      chatHistory = maintainHistoryWindow(chatHistory, 10);
+    }
+
+    const tools = [{ function_declarations: getPowerPointToolDeclarations() }];
+    const systemInstruction = {
+      parts: [{
+        text: loadSystemMessage() + `\n\nPOWERPOINT CONTEXT:
+You are running inside Microsoft PowerPoint, not Word. Use only PowerPoint Office.js APIs and PowerPoint tools.
+
+POWERPOINT BEHAVIOR:
+- Follow the user's latest chat instruction first.
+- Work like a PowerPoint co-worker: inspect the selected slide, selected shapes, selected text, and available slide text, then execute the requested presentation action.
+- Prefer selected text/shapes/slides when the user says selected, this, here, current, or highlighted.
+- Use all slides only when the user explicitly says all slides, every slide, entire presentation, or throughout the presentation.
+- Do not use Word-only concepts such as Word paragraphs, Word redlines, Word equations, Word comments, or Word track changes in PowerPoint.
+- For text edits, replacements, font color, bold, italic, underline, size, subscript, or superscript, call a PowerPoint tool instead of only explaining.
+- For layout/content actions not covered by a specific tool, use run_powerpoint_script and write Office.js for the PowerPoint object model.
+- If the request is ambiguous about slide, shape, or variant, ask one short clarification.
+- After a successful tool call, give a full chat response explaining what you changed, which PowerPoint tool/script path you used, the scope, and any limitation. Do not expose hidden chain-of-thought.
+
+AVAILABLE POWERPOINT TOOL INTENT:
+- ppt_insert_textbox: add a textbox to the selected/current slide.
+- ppt_replace_selected_text: replace the currently selected text, or the text in the selected shape.
+- ppt_format_text_occurrences: apply font formatting to matching text in selected/current slides or the whole presentation.
+- run_powerpoint_script: execute generated PowerPoint Office.js against the open presentation.`
+      }]
+    };
+
+    let keepLooping = true;
+    let loopCount = 0;
+
+    while (keepLooping && loopCount < 4) {
+      loopCount++;
+      if (currentRequestController?.signal?.aborted) {
+        removeMessage(loadingMsg);
+        addMessageToChat("System", "Request cancelled.");
+        break;
+      }
+
+      const payload = {
+        contents: chatHistory,
+        systemInstruction,
+        tools,
+        safetySettings: SAFETY_SETTINGS_BLOCK_NONE,
+        generationConfig: {
+          maxOutputTokens: API_LIMITS.MAX_OUTPUT_TOKENS
+        }
+      };
+
+      const result = useLiveApi
+        ? await callGeminiLiveAsGenerateContent(geminiApiKey, geminiModel, payload)
+        : await callGeminiWithModelFallback(geminiApiKey, geminiModel, payload);
+
+      const parts = result?.candidates?.[0]?.content?.parts;
+      if (!parts || !Array.isArray(parts)) {
+        throw new Error("Gemini response was missing content.parts");
+      }
+
+      const functionCalls = parts.filter(part => part.functionCall).map(part => part.functionCall);
+      if (functionCalls.length === 0) {
+        const textPart = parts.find(part => part.text && !part.thought);
+        removeMessage(loadingMsg);
+        addMessageToChat("Gemini", textPart ? textPart.text : "Response generated.");
+        chatHistory.push({ role: "model", parts });
+        keepLooping = false;
+        break;
+      }
+
+      const functionResponses = [];
+      for (const functionCall of functionCalls) {
+        const args = functionCall.args || {};
+        updateSystemMessage(loadingMsg, `Running PowerPoint tool: ${functionCall.name}...`);
+        const resultText = await executePowerPointFunctionCall(functionCall.name, args);
+
+        toolsExecutedInCurrentRequest.push({
+          name: functionCall.name,
+          instruction: JSON.stringify(args),
+          result: resultText,
+          success: !/^Error:/i.test(resultText)
+        });
+
+        updateSystemMessage(loadingMsg, resultText);
+        functionResponses.push({
+          functionResponse: {
+            name: functionCall.name,
+            response: {
+              name: functionCall.name,
+              content: [{ text: resultText }]
+            },
+            id: functionCall.id
+          }
+        });
+        if (!functionCall.id) {
+          delete functionResponses[functionResponses.length - 1].functionResponse.id;
+        }
+      }
+
+      chatHistory.push({ role: "model", parts });
+      chatHistory.push({ role: "user", parts: functionResponses });
+    }
+
+    if (keepLooping && toolsExecutedInCurrentRequest.length > 0) {
+      removeMessage(loadingMsg);
+      addMessageToChat("Gemini", generatePowerPointSuccessMessage(toolsExecutedInCurrentRequest));
+      chatHistory = [];
+    }
+  } catch (error) {
+    console.error("Error calling Gemini for PowerPoint:", error);
+    if (error.message === "Request cancelled by user") {
+      removeMessage(loadingMsg);
+      addMessageToChat("System", "Request cancelled.");
+    } else {
+      if (toolsExecutedInCurrentRequest.length === 0) {
+        removeMessage(loadingMsg);
+        if (chatHistory.length > 0 && chatHistory[chatHistory.length - 1].role === "user") {
+          chatHistory.pop();
+        }
+      }
+      addMessageToChat("Error", `Sorry, I couldn't get a response. Error: ${error.message || String(error)}`);
+    }
+  } finally {
+    currentRequestController = null;
+    chatInput.disabled = false;
+    sendButton.disabled = false;
+    if (thinkButton) thinkButton.disabled = false;
+    chatInput.focus();
+  }
+}
+
+function getPowerPointToolDeclarations() {
+  return [
+    {
+      name: "ppt_insert_textbox",
+      description: "Insert a text box on the selected or current PowerPoint slide. Use this for adding slide text, captions, speaker-note-like visible text, labels, or generated content. Do not use Word tools in PowerPoint.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          text: { type: "STRING", description: "Text to insert in the textbox." },
+          left: { type: "NUMBER", description: "Optional left position in points. Default 72." },
+          top: { type: "NUMBER", description: "Optional top position in points. Default 120." },
+          width: { type: "NUMBER", description: "Optional width in points. Default 540." },
+          height: { type: "NUMBER", description: "Optional height in points. Default 120." },
+          fontSize: { type: "NUMBER", description: "Optional font size." },
+          color: { type: "STRING", description: "Optional font color, for example #0000FF or blue." },
+          bold: { type: "BOOLEAN" },
+          italic: { type: "BOOLEAN" }
+        },
+        required: ["text"]
+      }
+    },
+    {
+      name: "ppt_replace_selected_text",
+      description: "Replace the currently selected PowerPoint text, or the text in the selected shape if no text range is selected. Use this when the user asks to rewrite or replace selected slide text.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          text: { type: "STRING", description: "Replacement text." }
+        },
+        required: ["text"]
+      }
+    },
+    {
+      name: "ppt_format_text_occurrences",
+      description: "Apply PowerPoint font formatting to matching text occurrences in selected/current slides or the whole presentation. Use this for color, bold, italic, underline, subscript, superscript, or size changes.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          targets: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                text: { type: "STRING", description: "Exact text to find." },
+                replacement: { type: "STRING", description: "Optional replacement text." },
+                bold: { type: "BOOLEAN" },
+                italic: { type: "BOOLEAN" },
+                underline: { type: "BOOLEAN" },
+                subscript: { type: "BOOLEAN" },
+                superscript: { type: "BOOLEAN" },
+                color: { type: "STRING", description: "Font color, for example blue or #0000FF." },
+                size: { type: "NUMBER" },
+                matchCase: { type: "BOOLEAN", description: "Default true." },
+                matchWholeWord: { type: "BOOLEAN", description: "Default false." }
+              },
+              required: ["text"]
+            }
+          },
+          scope: {
+            type: "STRING",
+            enum: ["selected", "current_slide", "presentation"],
+            description: "Use selected/current_slide unless the user explicitly asks for the whole presentation."
+          }
+        },
+        required: ["targets"]
+      }
+    },
+    {
+      name: "run_powerpoint_script",
+      description: "Run generated Office.js against the open PowerPoint presentation. Provide only the body of an async function that receives context, helpers, and args. Do not call PowerPoint.run inside the script; the add-in wraps it. Return a clear result string or count.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          javascript: {
+            type: "STRING",
+            description: "Body of async function(context, helpers, args). Use context.presentation and helpers."
+          },
+          description: { type: "STRING", description: "Short explanation of what the script will do." },
+          args: { type: "OBJECT", description: "Optional JSON arguments for the script." }
+        },
+        required: ["javascript"]
+      }
+    }
+  ];
+}
+
+async function extractPowerPointContext() {
+  if (!Office.context.requirements.isSetSupported("PowerPointApi", "1.5")) {
+    return "PowerPoint context unavailable: this Office build does not support PowerPointApi 1.5.";
+  }
+
+  const lines = ["Context from the current PowerPoint presentation:"];
+
+  await PowerPoint.run(async (context) => {
+    const presentation = context.presentation;
+    presentation.load("title");
+    const selectedSlides = presentation.getSelectedSlides();
+    selectedSlides.load("items/id,index");
+    const selectedShapes = presentation.getSelectedShapes();
+    selectedShapes.load("items/id,name,type,left,top,width,height");
+    const selectedTextRange = presentation.getSelectedTextRangeOrNullObject();
+    selectedTextRange.load("text");
+    await context.sync();
+
+    lines.push(`Presentation title: ${presentation.title || "(untitled)"}`);
+    if (!selectedTextRange.isNullObject && selectedTextRange.text) {
+      lines.push(`Selected text: """${selectedTextRange.text}"""`);
+    }
+
+    const slides = selectedSlides.items || [];
+    if (slides.length > 0) {
+      lines.push(`Selected slides: ${slides.map(slide => `slide ${slide.index + 1}`).join(", ")}`);
+    } else {
+      lines.push("Selected slides: none reported by PowerPoint.");
+    }
+
+    if (selectedShapes.items?.length) {
+      lines.push("Selected shapes:");
+      for (const shape of selectedShapes.items) {
+        lines.push(`- ${shape.name || shape.id} (${shape.type}) at left=${Math.round(shape.left || 0)}, top=${Math.round(shape.top || 0)}, width=${Math.round(shape.width || 0)}, height=${Math.round(shape.height || 0)}`);
+      }
+    }
+
+    const slidesToInspect = slides.length ? slides.slice(0, 3) : [presentation.slides.getItemAt(0)];
+    for (const slide of slidesToInspect) {
+      slide.load("id,index");
+      slide.shapes.load("items/id,name,type");
+    }
+    await context.sync();
+
+    for (const slide of slidesToInspect) {
+      const textRanges = [];
+      for (const shape of slide.shapes.items || []) {
+        if (!isPowerPointTextShape(shape)) continue;
+        try {
+          const textRange = shape.textFrame.textRange;
+          textRange.load("text");
+          textRanges.push({ shape, textRange });
+        } catch (error) {
+          console.warn("Skipping non-text PowerPoint shape:", error);
+        }
+      }
+      await context.sync();
+
+      lines.push(`Slide ${slide.index + 1} visible text:`);
+      let hasText = false;
+      for (const item of textRanges) {
+        const text = String(item.textRange.text || "").trim();
+        if (!text) continue;
+        hasText = true;
+        lines.push(`- ${item.shape.name || item.shape.id}: ${text}`);
+      }
+      if (!hasText) lines.push("- (no text found in inspected shapes)");
+    }
+  });
+
+  return lines.join("\n");
+}
+
+function isPowerPointTextShape(shape) {
+  const type = String(shape?.type || "");
+  return ["TextBox", "Placeholder", "GeometricShape", "Callout"].includes(type);
+}
+
+async function executePowerPointFunctionCall(name, args) {
+  try {
+    if (name === "ppt_insert_textbox") {
+      return await executePowerPointInsertTextBox(args);
+    }
+    if (name === "ppt_replace_selected_text") {
+      return await executePowerPointReplaceSelectedText(args);
+    }
+    if (name === "ppt_format_text_occurrences") {
+      return await executePowerPointFormatTextOccurrences(args);
+    }
+    if (name === "run_powerpoint_script") {
+      return await executePowerPointScript(args);
+    }
+    return `Error: Unknown PowerPoint tool "${name}".`;
+  } catch (error) {
+    console.error(`PowerPoint tool ${name} failed:`, error);
+    return `Error: ${error.message || String(error)}`;
+  }
+}
+
+async function executePowerPointInsertTextBox(args = {}) {
+  const text = String(args.text || "");
+  if (!text.trim()) return "Error: No textbox text was provided.";
+
+  return PowerPoint.run(async (context) => {
+    const slide = await getPowerPointCurrentSlide(context);
+    const shape = slide.shapes.addTextBox(text, {
+      left: Number.isFinite(args.left) ? args.left : 72,
+      top: Number.isFinite(args.top) ? args.top : 120,
+      width: Number.isFinite(args.width) ? args.width : 540,
+      height: Number.isFinite(args.height) ? args.height : 120
+    });
+
+    const font = shape.textFrame.textRange.font;
+    if (Number.isFinite(args.fontSize)) font.size = args.fontSize;
+    if (args.color) font.color = normalizeWordColor(args.color);
+    if (args.bold !== undefined) font.bold = !!args.bold;
+    if (args.italic !== undefined) font.italic = !!args.italic;
+    shape.load("id");
+    await context.sync();
+    return `Inserted a textbox on the current slide with ${text.length} character(s).`;
+  });
+}
+
+async function executePowerPointReplaceSelectedText(args = {}) {
+  const replacement = String(args.text || "");
+  if (!replacement) return "Error: Replacement text is empty.";
+
+  return PowerPoint.run(async (context) => {
+    const presentation = context.presentation;
+    const selectedTextRange = presentation.getSelectedTextRangeOrNullObject();
+    selectedTextRange.load("text");
+    const selectedShapes = presentation.getSelectedShapes();
+    selectedShapes.load("items/id,name,type");
+    await context.sync();
+
+    if (!selectedTextRange.isNullObject) {
+      const oldLength = String(selectedTextRange.text || "").length;
+      selectedTextRange.text = replacement;
+      await context.sync();
+      return `Replaced selected PowerPoint text (${oldLength} character(s)) with ${replacement.length} character(s).`;
+    }
+
+    const firstTextShape = (selectedShapes.items || []).find(isPowerPointTextShape);
+    if (!firstTextShape) {
+      return "Error: No selected text or text-capable selected shape was found.";
+    }
+
+    const textRange = firstTextShape.textFrame.textRange;
+    textRange.load("text");
+    await context.sync();
+    const oldLength = String(textRange.text || "").length;
+    textRange.text = replacement;
+    await context.sync();
+    return `Replaced text in the selected shape (${oldLength} character(s)) with ${replacement.length} character(s).`;
+  });
+}
+
+async function executePowerPointFormatTextOccurrences(args = {}) {
+  const targets = Array.isArray(args.targets) ? args.targets : [];
+  if (targets.length === 0) return "Error: No formatting targets were provided.";
+  const scope = args.scope || "selected";
+
+  return PowerPoint.run(async (context) => {
+    const count = await formatPowerPointTextMatchesInContext(context, targets, { scope });
+    await context.sync();
+    return count > 0
+      ? `Formatted ${count} PowerPoint text occurrence(s) in scope "${scope}".`
+      : `No matching PowerPoint text occurrences were found in scope "${scope}".`;
+  });
+}
+
+async function executePowerPointScript(args = {}) {
+  const javascript = String(args.javascript || "");
+  if (!javascript.trim()) return "Error: No PowerPoint script was provided.";
+
+  return PowerPoint.run(async (context) => {
+    const helpers = createPowerPointScriptHelpers();
+    const runner = new Function("context", "helpers", "args", `"use strict"; return (async () => {\n${javascript}\n})();`);
+    const result = await runner(context, helpers, args.args || {});
+    await context.sync();
+    if (result === undefined || result === null || result === "") {
+      return args.description ? `Applied PowerPoint script: ${args.description}` : "Applied PowerPoint script.";
+    }
+    return String(result);
+  });
+}
+
+function createPowerPointScriptHelpers() {
+  return {
+    getCurrentSlide: getPowerPointCurrentSlide,
+    formatTextMatches: formatPowerPointTextMatchesInContext,
+    insertTextBox: async (context, text, options = {}) => {
+      const slide = await getPowerPointCurrentSlide(context);
+      const shape = slide.shapes.addTextBox(String(text || ""), options);
+      shape.load("id");
+      await context.sync();
+      return shape.id;
+    },
+    replaceSelectedText: async (context, text) => {
+      const selectedTextRange = context.presentation.getSelectedTextRangeOrNullObject();
+      selectedTextRange.load("text");
+      await context.sync();
+      if (selectedTextRange.isNullObject) return 0;
+      selectedTextRange.text = String(text || "");
+      await context.sync();
+      return 1;
+    },
+    recordApplied: (count, label = "PowerPoint operation") => `${label}: ${count} change(s) applied.`
+  };
+}
+
+async function getPowerPointCurrentSlide(context) {
+  const selectedSlides = context.presentation.getSelectedSlides();
+  selectedSlides.load("items/id,index");
+  await context.sync();
+  if (selectedSlides.items?.length) {
+    return selectedSlides.items[0];
+  }
+  return context.presentation.slides.getItemAt(0);
+}
+
+async function resolvePowerPointTargetSlides(context, scope = "selected") {
+  const normalizedScope = String(scope || "selected").toLowerCase();
+  if (normalizedScope === "presentation" || normalizedScope === "all") {
+    const slides = context.presentation.slides;
+    slides.load("items/id,index");
+    await context.sync();
+    return slides.items || [];
+  }
+
+  const selectedSlides = context.presentation.getSelectedSlides();
+  selectedSlides.load("items/id,index");
+  await context.sync();
+  if (selectedSlides.items?.length) {
+    return selectedSlides.items;
+  }
+  return [context.presentation.slides.getItemAt(0)];
+}
+
+async function formatPowerPointTextMatchesInContext(context, targets = [], options = {}) {
+  const slides = await resolvePowerPointTargetSlides(context, options.scope || "selected");
+  for (const slide of slides) {
+    slide.shapes.load("items/id,name,type");
+  }
+  await context.sync();
+
+  const textRanges = [];
+  for (const slide of slides) {
+    for (const shape of slide.shapes.items || []) {
+      if (!isPowerPointTextShape(shape)) continue;
+      try {
+        const textRange = shape.textFrame.textRange;
+        textRange.load("text");
+        textRanges.push(textRange);
+      } catch (error) {
+        console.warn("Skipping PowerPoint shape without editable text:", error);
+      }
+    }
+  }
+  await context.sync();
+
+  let appliedCount = 0;
+  for (const textRange of textRanges) {
+    const text = String(textRange.text || "");
+    for (const target of targets) {
+      const matches = findTextOccurrences(text, target.text, {
+        matchCase: target.matchCase !== false,
+        matchWholeWord: target.matchWholeWord === true
+      });
+
+      for (let i = matches.length - 1; i >= 0; i--) {
+        const match = matches[i];
+        const subRange = textRange.getSubstring(match.index, match.length);
+        if (target.replacement !== undefined) {
+          subRange.text = String(target.replacement);
+        } else {
+          applyPowerPointFontPlan(subRange.font, target);
+        }
+        appliedCount++;
+      }
+    }
+  }
+
+  return appliedCount;
+}
+
+function applyPowerPointFontPlan(font, target = {}) {
+  if (target.bold !== undefined) font.bold = !!target.bold;
+  if (target.italic !== undefined) font.italic = !!target.italic;
+  if (target.underline !== undefined) font.underline = target.underline ? "Single" : "None";
+  if (target.subscript !== undefined) font.subscript = !!target.subscript;
+  if (target.superscript !== undefined) font.superscript = !!target.superscript;
+  if (target.color) font.color = normalizeWordColor(target.color);
+  if (Number.isFinite(target.size)) font.size = target.size;
+}
+
+function findTextOccurrences(sourceText, targetText, options = {}) {
+  const source = String(sourceText || "");
+  const target = String(targetText || "");
+  if (!source || !target) return [];
+
+  const haystack = options.matchCase === false ? source.toLowerCase() : source;
+  const needle = options.matchCase === false ? target.toLowerCase() : target;
+  const matches = [];
+  let index = haystack.indexOf(needle);
+
+  while (index >= 0) {
+    const end = index + needle.length;
+    const isWholeWord = !options.matchWholeWord || (isTextBoundary(source[index - 1]) && isTextBoundary(source[end]));
+    if (isWholeWord) {
+      matches.push({ index, length: target.length });
+    }
+    index = haystack.indexOf(needle, index + Math.max(needle.length, 1));
+  }
+
+  return matches;
+}
+
+function isTextBoundary(char) {
+  return !char || !/[A-Za-z0-9_]/.test(char);
+}
+
+function generatePowerPointSuccessMessage(executedTools = []) {
+  const successfulTools = (Array.isArray(executedTools) ? executedTools : []).filter(tool => tool && tool.success !== false);
+  if (successfulTools.length === 0) return "I could not confirm that a PowerPoint change was applied.";
+  const latest = successfulTools[successfulTools.length - 1];
+  return latest.result || "Applied the requested PowerPoint change.";
 }
 
 // Helper with retry logic and timeout support
